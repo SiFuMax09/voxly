@@ -116,30 +116,38 @@ const GPU_BUILD: bool = cfg!(any(
     all(target_os = "macos", target_arch = "aarch64")
 ));
 
+/// A loaded model plus its decoding state. Creating the state allocates the
+/// compute buffers (and, on Vulkan, compiles shaders), so it is reused too.
+#[cfg(feature = "local")]
+struct Engine {
+    state: std::sync::Mutex<whisper_rs::WhisperState>,
+}
+
 /// Loading a model takes seconds (more with a GPU), so keep the last one.
 #[cfg(feature = "local")]
-fn context(model: &Path, use_gpu: bool) -> Result<std::sync::Arc<whisper_rs::WhisperContext>> {
+fn engine(model: &Path, use_gpu: bool) -> Result<std::sync::Arc<Engine>> {
     use std::sync::{Arc, Mutex, OnceLock};
     use whisper_rs::{WhisperContext, WhisperContextParameters};
 
-    static CACHE: OnceLock<Mutex<Option<(PathBuf, bool, Arc<WhisperContext>)>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<Option<(PathBuf, bool, Arc<Engine>)>>> = OnceLock::new();
     let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
-    if let Some((p, gpu, c)) = &*cache {
+    if let Some((p, gpu, e)) = &*cache {
         if p == model && *gpu == use_gpu {
-            return Ok(c.clone());
+            return Ok(e.clone());
         }
     }
     let mut params = WhisperContextParameters::default();
     params.use_gpu(use_gpu);
-    let c = Arc::new(
-        WhisperContext::new_with_params(
-            model.to_str().ok_or_else(|| anyhow!("non-UTF-8 model path"))?,
-            params,
-        )
-        .map_err(|e| anyhow!("could not load model: {e}"))?,
-    );
-    *cache = Some((model.to_path_buf(), use_gpu, c.clone()));
-    Ok(c)
+    params.flash_attn(use_gpu);
+    let ctx = WhisperContext::new_with_params(
+        model.to_str().ok_or_else(|| anyhow!("non-UTF-8 model path"))?,
+        params,
+    )
+    .map_err(|e| anyhow!("could not load model: {e}"))?;
+    let state = ctx.create_state().map_err(|e| anyhow!("{e}"))?;
+    let e = Arc::new(Engine { state: Mutex::new(state) });
+    *cache = Some((model.to_path_buf(), use_gpu, e.clone()));
+    Ok(e)
 }
 
 /// Loads the configured local model ahead of the first recording so that
@@ -149,7 +157,7 @@ pub fn preload(settings: &Settings, models_dir: &Path) {
     if settings.backend == "local" {
         if let Ok(path) = model_path(models_dir, &settings.local_model) {
             if path.exists() {
-                if let Err(e) = context(&path, settings.use_gpu) {
+                if let Err(e) = engine(&path, settings.use_gpu) {
                     eprintln!("could not preload model: {e:#}");
                 }
             }
@@ -163,10 +171,10 @@ pub fn preload(settings: &Settings, models_dir: &Path) {
 fn run(settings: &Settings, wav: &[u8], model: &Path) -> Result<String> {
     use whisper_rs::{FullParams, SamplingStrategy};
 
-    let ctx = context(model, settings.use_gpu)?;
+    let engine = engine(model, settings.use_gpu)?;
 
     let samples = wav_to_f32(wav)?;
-    let mut state = ctx.create_state().map_err(|e| anyhow!("{e}"))?;
+    let mut state = engine.state.lock().unwrap();
     // Beam search is only affordable on a GPU; on the CPU greedy decoding is
     // several times faster for short dictation.
     let strategy = if GPU_BUILD {
