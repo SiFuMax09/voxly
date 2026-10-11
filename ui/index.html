@@ -55,6 +55,9 @@
       <div id="local-box" hidden>
         <label>Local model <select id="local-model"></select></label>
         <label class="check"><input type="checkbox" id="use-gpu"> Use the GPU when available (much faster)</label>
+        <button id="tune" class="secondary" type="button">Find fastest settings</button>
+        <p class="hint">Records 5 seconds of your voice, tries GPU, flash attention, decoding and thread options, and keeps the fastest one that gives the same text.</p>
+        <ul id="tune-log" class="hint" hidden></ul>
         <button id="download" class="secondary" type="button" hidden>Download model</button>
         <p id="dl-status" class="hint" hidden></p>
       </div>

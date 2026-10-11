@@ -43,6 +43,13 @@ pub struct Settings {
     /// Run local transcription on the GPU when the build supports it
     /// (Metal, Vulkan, CUDA or HIP). Falls back to the CPU otherwise.
     pub use_gpu: bool,
+    /// Flash attention on the GPU. Set by the speed test.
+    pub flash_attn: bool,
+    /// Decoding width: 1 is greedy, higher is beam search. 0 picks a default
+    /// for this build. Set by the speed test.
+    pub beam_size: u32,
+    /// CPU threads for local transcription; 0 picks a default.
+    pub threads: u32,
     pub hotkeys: Hotkeys,
     /// Paste into the focused app after transcribing (desktop only).
     pub auto_paste: bool,
@@ -61,6 +68,9 @@ impl Default for Settings {
             language: String::new(),
             vocabulary: Vec::new(),
             use_gpu: true,
+            flash_attn: true,
+            beam_size: 0,
+            threads: 0,
             hotkeys: Hotkeys::default(),
             auto_paste: true,
             overlay_position: "top".into(),

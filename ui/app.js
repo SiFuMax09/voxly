@@ -177,6 +177,39 @@ function termRow(t = { term: '', sounds_like: [] }) {
 }
 $('add-term').onclick = () => termRow();
 
+// ---- speed test ---------------------------------------------------------
+$('tune').onclick = async () => {
+  const log = $('tune-log');
+  log.replaceChildren();
+  log.hidden = false;
+  $('tune').disabled = true;
+  $('error').hidden = true;
+  try {
+    const r = await invoke('tune_speed');
+    const li = document.createElement('li');
+    li.textContent = `Fastest: ${r.best} (${(Math.min(...r.trials.filter((t) => t.similar).map((t) => t.ms)) / 1000).toFixed(2)} s). Applied.`;
+    li.style.fontWeight = '600';
+    log.append(li);
+    settings = await invoke('get_settings');
+    render();
+  } catch (e) {
+    $('error').textContent = String(e);
+    $('error').hidden = false;
+  }
+  $('tune').disabled = false;
+};
+listen('tune', (e) => {
+  const li = document.createElement('li');
+  li.textContent = e.payload;
+  $('tune-log').append(li);
+});
+listen('tune_trial', (e) => {
+  const t = e.payload;
+  const li = document.createElement('li');
+  li.textContent = `${t.label}: ${(t.ms / 1000).toFixed(2)} s${t.similar ? '' : ' (text differs, skipped)'}`;
+  $('tune-log').append(li);
+});
+
 // ---- hotkey capture -----------------------------------------------------
 const isMac = /Mac/i.test(navigator.platform || navigator.userAgent);
 const MODS = {

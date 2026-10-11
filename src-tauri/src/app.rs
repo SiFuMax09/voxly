@@ -570,6 +570,66 @@ async fn download_model(app: AppHandle, id: String) -> Result<(), String> {
     .map_err(|e| format!("{e:#}"))
 }
 
+/// Records a few seconds of speech, then times the local transcription
+/// settings on it and keeps the fastest one that gives the same text.
+#[tauri::command]
+async fn tune_speed(app: AppHandle) -> Result<local::TuneReport, String> {
+    const SAMPLE: std::time::Duration = std::time::Duration::from_secs(5);
+    {
+        let state = app.state::<AppState>();
+        if state.settings.lock().unwrap().backend != "local" {
+            return Err("Switch the backend to local transcription first.".into());
+        }
+        let mut busy = state.busy.lock().unwrap();
+        if *busy || state.recorder.is_recording() {
+            return Err("Voxly is busy, try again in a moment.".into());
+        }
+        *busy = true;
+    }
+    let result = tune_speed_inner(&app, SAMPLE).await;
+    *app.state::<AppState>().busy.lock().unwrap() = false;
+    set_status(&app, Status::Idle);
+    result
+}
+
+async fn tune_speed_inner(
+    app: &AppHandle,
+    sample: std::time::Duration,
+) -> Result<local::TuneReport, String> {
+    let state = app.state::<AppState>();
+    state.recorder.start().map_err(|e| format!("{e:#}"))?;
+    set_status(app, Status::Recording);
+    let _ = app.emit("tune", "Speak now for 5 seconds…");
+    let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(sample)).await;
+    let wav = state.recorder.stop().map_err(|e| format!("{e:#}"))?;
+    set_status(app, Status::Transcribing);
+    let _ = app.emit("tune", "Testing settings…");
+
+    let settings = state.settings.lock().unwrap().clone();
+    let dir = state.models_dir.clone();
+    let emitter = app.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        local::benchmark(&settings, &wav, &dir, |t| {
+            let _ = emitter.emit("tune_trial", t.clone());
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("{e:#}"))?;
+
+    let updated = {
+        let mut s = state.settings.lock().unwrap();
+        s.use_gpu = report.use_gpu;
+        s.flash_attn = report.flash_attn;
+        s.beam_size = report.beam_size;
+        s.threads = report.threads;
+        s.clone()
+    };
+    updated.save(&state.settings_path).map_err(|e| format!("{e:#}"))?;
+    preload_model(app);
+    Ok(report)
+}
+
 #[tauri::command]
 fn toggle(app: AppHandle) {
     toggle_recording(&app);
@@ -686,6 +746,7 @@ pub fn run() {
             list_models,
             download_model,
             toggle,
+            tune_speed,
             get_last,
             get_usage,
             get_history,
