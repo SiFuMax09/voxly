@@ -393,6 +393,7 @@ function render() {
   $('compare-mode').checked = !!settings.compare_mode;
   $('trim-silence').checked = settings.trim_silence !== false;
   $('voice-commands').checked = settings.voice_commands !== false;
+  $('streaming').checked = settings.streaming !== false;
   $('typing-wpm').value = settings.typing_wpm || 40;
   if (!$('tab-usage').hidden) renderUsage();
   $('mic').value = settings.input_device || '';
@@ -422,6 +423,7 @@ function collect() {
     compare_mode: $('compare-mode').checked,
     trim_silence: $('trim-silence').checked,
     voice_commands: $('voice-commands').checked,
+    streaming: $('streaming').checked,
     typing_wpm: Math.max(5, Number($('typing-wpm').value) || 40),
     input_device: $('mic').value,
     use_gpu: $('use-gpu').checked,

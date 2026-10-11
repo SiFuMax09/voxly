@@ -47,6 +47,9 @@ pub struct Settings {
     pub trim_silence: bool,
     /// Understand spoken commands such as "new line", "comma" or "delete that".
     pub voice_commands: bool,
+    /// Transcribe finished parts of a recording while it is still running
+    /// (local backend only), so little is left to do when the key is released.
+    pub streaming: bool,
     /// The user's typing speed in words per minute, for the time-saved figure.
     pub typing_wpm: u32,
     /// Transcribe every recording with both the local model and the OpenAI
@@ -81,6 +84,7 @@ impl Default for Settings {
             use_gpu: true,
             trim_silence: true,
             voice_commands: true,
+            streaming: true,
             typing_wpm: 40,
             compare_mode: false,
             input_device: String::new(),

@@ -23,6 +23,7 @@ struct AppState {
     last: Mutex<String>,
     /// Characters inserted by the last paste, for the "delete that" command.
     inserted: Mutex<usize>,
+    stream: Mutex<Option<StreamJob>>,
     busy: Mutex<bool>,
 }
 
@@ -56,16 +57,76 @@ fn report(app: &AppHandle, err: impl std::fmt::Display) {
     set_status(app, Status::Idle);
 }
 
+/// Background task that transcribes finished parts of a running recording.
+struct StreamJob {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: tauri::async_runtime::JoinHandle<Result<Vec<String>, String>>,
+}
+
 fn start_recording(app: &AppHandle) {
     let state = app.state::<AppState>();
     if *state.busy.lock().unwrap() {
         return;
     }
-    let device = state.settings.lock().unwrap().input_device.clone();
-    match state.recorder.start(&device) {
-        Ok(()) => set_status(app, Status::Recording),
+    let settings = state.settings.lock().unwrap().clone();
+    match state.recorder.start(&settings.input_device) {
+        Ok(()) => {
+            set_status(app, Status::Recording);
+            // Streaming only helps the local model, and compare mode needs the
+            // whole audio for both sides.
+            if settings.streaming && settings.backend == "local" && !settings.compare_mode {
+                let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let handle = tauri::async_runtime::spawn(stream_worker(app.clone(), stop.clone()));
+                *state.stream.lock().unwrap() = Some(StreamJob { stop, handle });
+            }
+        }
         Err(e) => report(app, e),
     }
+}
+
+/// Every quarter second, looks for a pause in what has been recorded so far
+/// and transcribes the speech before it, so that only the last words are left
+/// when the key is released. Returns the texts of the chunks in order.
+async fn stream_worker(
+    app: AppHandle,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<Vec<String>, String> {
+    use std::sync::atomic::Ordering;
+    use voxly_core::audio::{find_pause_cut, samples_to_wav, trim_silence};
+
+    let mut texts: Vec<String> = Vec::new();
+    let mut cut = 0usize;
+    while !stop.load(Ordering::SeqCst) {
+        let _ = tauri::async_runtime::spawn_blocking(|| {
+            std::thread::sleep(std::time::Duration::from_millis(250))
+        })
+        .await;
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        let state = app.state::<AppState>();
+        let Some((len, rate)) = state.recorder.progress() else { break };
+        let Some(region) = state.recorder.copy_range(cut, len) else { break };
+        let Some(rel) = find_pause_cut(&region, rate) else { continue };
+        let Ok(wav) = samples_to_wav(&region[..rel], rate) else { continue };
+        cut += rel;
+        state.recorder.mark_processed(cut);
+        // A chunk of pure silence would only produce invented text.
+        let wav = match trim_silence(&wav) {
+            Ok(Some(w)) => w,
+            Ok(None) => continue,
+            Err(_) => wav,
+        };
+        let settings = state.settings.lock().unwrap().clone();
+        let context = texts.last().cloned().unwrap_or_default();
+        let text = voxly_core::transcribe::transcribe_chunk(&settings, wav, &state.models_dir, &context)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if !text.trim().is_empty() {
+            texts.push(text);
+        }
+    }
+    Ok(texts)
 }
 
 /// How long to keep recording after the key is released, so the last word of
@@ -90,35 +151,78 @@ fn stop_recording(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         let _ = tauri::async_runtime::spawn_blocking(|| std::thread::sleep(TAIL)).await;
         let state = app.state::<AppState>();
-        let wav = match state.recorder.stop() {
-            Ok(w) => w,
-            Err(e) => {
+        // Timed from here: what the user waits for after letting go of the key.
+        let started = std::time::Instant::now();
+
+        // Let the streaming task finish the chunk it is working on.
+        let job = state.stream.lock().unwrap().take();
+        let streamed = job.is_some();
+        let chunks = match job {
+            Some(j) => {
+                j.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                j.handle.await.map_err(|e| e.to_string()).and_then(|r| r)
+            }
+            None => Ok(Vec::new()),
+        };
+        let total_seconds = state.recorder.progress().map(|(n, r)| n as u64 / r.max(1) as u64);
+        let wav = state.recorder.stop();
+        let (wav, chunks) = match (wav, chunks) {
+            (Ok(w), Ok(c)) => (w, c),
+            (Err(e), _) => {
+                *state.busy.lock().unwrap() = false;
+                return report(&app, e);
+            }
+            (Ok(_), Err(e)) => {
                 *state.busy.lock().unwrap() = false;
                 return report(&app, e);
             }
         };
         let settings = state.settings.lock().unwrap().clone();
-        let seconds = usage::wav_seconds(&wav);
-        let wav = if settings.trim_silence {
-            match voxly_core::audio::trim_silence(&wav) {
-                Ok(Some(trimmed)) => trimmed,
-                Ok(None) => {
-                    *state.busy.lock().unwrap() = false;
-                    return report(&app, "No speech detected.");
-                }
-                Err(e) => {
-                    eprintln!("could not trim silence: {e:#}");
-                    wav
+        let seconds = match (streamed, total_seconds) {
+            (true, Some(t)) => t,
+            _ => usage::wav_seconds(&wav),
+        };
+
+        let result: anyhow::Result<String> = if streamed {
+            // Only the audio after the last chunk is left.
+            let tail = match voxly_core::audio::trim_silence(&wav) {
+                Ok(Some(w)) => Some(w),
+                Ok(None) => None,
+                Err(_) => Some(wav),
+            };
+            let mut parts = chunks;
+            let mut failure = None;
+            if let Some(w) = tail {
+                let context = parts.last().cloned().unwrap_or_default();
+                match voxly_core::transcribe::transcribe_chunk(&settings, w, &state.models_dir, &context).await {
+                    Ok(t) if !t.trim().is_empty() => parts.push(t),
+                    Ok(_) => {}
+                    Err(e) => failure = Some(e),
                 }
             }
+            match failure {
+                Some(e) => Err(e),
+                None if parts.is_empty() => Err(anyhow::anyhow!("No speech detected.")),
+                None => Ok(parts.join(" ")),
+            }
         } else {
-            wav
-        };
-        let started = std::time::Instant::now();
-        let result = if settings.compare_mode {
-            compare(&app, &settings, wav, seconds).await
-        } else {
-            transcribe(&settings, wav, &state.models_dir).await
+            let trimmed = if settings.trim_silence {
+                match voxly_core::audio::trim_silence(&wav) {
+                    Ok(Some(t)) => Some(t),
+                    Ok(None) => None,
+                    Err(e) => {
+                        eprintln!("could not trim silence: {e:#}");
+                        Some(wav)
+                    }
+                }
+            } else {
+                Some(wav)
+            };
+            match trimmed {
+                None => Err(anyhow::anyhow!("No speech detected.")),
+                Some(wav) if settings.compare_mode => compare(&app, &settings, wav, seconds).await,
+                Some(wav) => transcribe(&settings, wav, &state.models_dir).await,
+            }
         };
         let elapsed = started.elapsed();
         *state.busy.lock().unwrap() = false;
@@ -129,6 +233,7 @@ fn stop_recording(app: &AppHandle) {
                 } else {
                     "cloud"
                 };
+                let backend = if streamed { format!("{backend}, streamed") } else { backend.to_owned() };
                 eprintln!("transcribed {seconds}s of audio in {:.2}s ({backend})", elapsed.as_secs_f32());
                 let _ = app.emit(
                     "timing",
@@ -888,6 +993,7 @@ pub fn run() {
                 recorder: Recorder::default(),
                 last: Mutex::new(String::new()),
                 inserted: Mutex::new(0),
+                stream: Mutex::new(None),
                 busy: Mutex::new(false),
             });
             preload_model(app.handle());

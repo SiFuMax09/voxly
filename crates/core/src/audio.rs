@@ -1,5 +1,6 @@
 use std::io::Cursor;
 use std::sync::mpsc::{self, Sender};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -13,6 +14,12 @@ const TARGET_RATE: u32 = 16_000;
 struct Active {
     stop: Sender<()>,
     handle: JoinHandle<Vec<u8>>,
+    /// Everything recorded so far, at the microphone's own sample rate.
+    samples: Arc<Mutex<Vec<f32>>>,
+    rate: u32,
+    /// Samples before this index were already handed out as streamed chunks;
+    /// `stop` returns only what comes after.
+    from: Arc<AtomicUsize>,
 }
 
 /// Records from the default microphone. The cpal stream is not `Send`, so it
@@ -34,18 +41,21 @@ impl Recorder {
             return Ok(());
         }
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
-        let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<u32>>();
+        let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let from = Arc::new(AtomicUsize::new(0));
 
         let device = device.to_owned();
+        let (thread_samples, thread_from) = (samples.clone(), from.clone());
         let handle = std::thread::spawn(move || {
-            let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
-            match open_stream(samples.clone(), &device) {
+            match open_stream(thread_samples.clone(), &device) {
                 Ok((stream, rate)) => {
-                    let _ = ready_tx.send(Ok(()));
+                    let _ = ready_tx.send(Ok(rate));
                     let _ = stop_rx.recv();
                     drop(stream);
-                    let data = std::mem::take(&mut *samples.lock().unwrap());
-                    encode_wav(&data, rate).unwrap_or_default()
+                    let data = std::mem::take(&mut *thread_samples.lock().unwrap());
+                    let start = thread_from.load(Ordering::SeqCst).min(data.len());
+                    encode_wav(&data[start..], rate).unwrap_or_default()
                 }
                 Err(e) => {
                     let _ = ready_tx.send(Err(e));
@@ -54,9 +64,32 @@ impl Recorder {
             }
         });
 
-        ready_rx.recv().context("audio thread died")??;
-        *slot = Some(Active { stop: stop_tx, handle });
+        let rate = ready_rx.recv().context("audio thread died")??;
+        *slot = Some(Active { stop: stop_tx, handle, samples, rate, from });
         Ok(())
+    }
+
+    /// Number of samples recorded so far and the sample rate, while recording.
+    pub fn progress(&self) -> Option<(usize, u32)> {
+        let slot = self.active.lock().unwrap();
+        slot.as_ref().map(|a| (a.samples.lock().unwrap().len(), a.rate))
+    }
+
+    /// A copy of the samples in `from..to`, while recording.
+    pub fn copy_range(&self, from: usize, to: usize) -> Option<Vec<f32>> {
+        let slot = self.active.lock().unwrap();
+        let a = slot.as_ref()?;
+        let data = a.samples.lock().unwrap();
+        let to = to.min(data.len());
+        Some(data[from.min(to)..to].to_vec())
+    }
+
+    /// Declares everything before `upto` as handled, so `stop` returns only
+    /// the audio after it (used by streaming transcription).
+    pub fn mark_processed(&self, upto: usize) {
+        if let Some(a) = self.active.lock().unwrap().as_ref() {
+            a.from.store(upto, Ordering::SeqCst);
+        }
     }
 
     /// Stops recording and returns 16 kHz mono WAV bytes.
@@ -263,6 +296,57 @@ fn encode_wav(samples: &[f32], rate: u32) -> Result<Vec<u8>> {
     Ok(cursor.into_inner())
 }
 
+/// Encodes microphone samples (at `rate`) as the 16 kHz mono WAV that the
+/// transcription backends expect.
+pub fn samples_to_wav(samples: &[f32], rate: u32) -> Result<Vec<u8>> {
+    encode_wav(samples, rate)
+}
+
+/// Looks for a good place to hand the audio recorded so far to the
+/// transcriber while the user is still speaking: a pause of 0.6 s or more
+/// after at least a short stretch of speech. Returns the sample index to cut
+/// at, relative to the start of `region`. Also cuts at the quietest moment of
+/// the last seconds if the region approaches Whisper's 30 s window.
+pub fn find_pause_cut(region: &[f32], rate: u32) -> Option<usize> {
+    const RUN: usize = 3;
+    const PAUSE: usize = 30; // frames of 20 ms = 600 ms
+    const MIN_SPEECH: usize = 10; // 200 ms
+    const KEEP: usize = 8; // keep 160 ms of the pause in the chunk
+    const MAX_FRAMES: usize = 24 * 50; // 24 s
+
+    let frame = (rate as usize / 50).max(1);
+    let loud: Vec<f32> = region
+        .chunks_exact(frame)
+        .map(|f| (f.iter().map(|s| s * s).sum::<f32>() / f.len() as f32).sqrt())
+        .collect();
+    if loud.len() < 75 {
+        return None;
+    }
+    let mut sorted = loud.clone();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let noise = sorted[sorted.len() / 5];
+    let loudest = sorted[sorted.len() * 9 / 10];
+    let threshold = (noise * 4.0).min(loudest * 0.5).max(0.01);
+
+    let speech = |i: usize| loud[i..i + RUN].iter().all(|&l| l > threshold);
+    let last_speech = (0..=loud.len() - RUN).rev().find(|&i| speech(i));
+    let speech_frames = loud.iter().filter(|&&l| l > threshold).count();
+
+    if let Some(ls) = last_speech {
+        let end = ls + RUN;
+        if loud.len() - end >= PAUSE && speech_frames >= MIN_SPEECH {
+            return Some(((end + KEEP) * frame).min(region.len()));
+        }
+    }
+    if loud.len() >= MAX_FRAMES {
+        // Too long without a pause: cut where it is quietest in the last 6 s.
+        let from = loud.len() - 6 * 50;
+        let quietest = (from..loud.len()).min_by(|&a, &b| loud[a].total_cmp(&loud[b]))?;
+        return Some(quietest * frame);
+    }
+    None
+}
+
 /// Cuts silence from the start and end of a recording (16 kHz mono WAV from
 /// [`Recorder::stop`]). Whisper then has less to process, and silence no
 /// longer produces invented sentences. Returns `None` if there is no speech.
@@ -323,6 +407,33 @@ mod tests {
             }
         }
         encode_wav(&samples, TARGET_RATE).unwrap()
+    }
+
+    fn tone(amp: f32, secs: f32, rate: u32) -> Vec<f32> {
+        (0..(secs * rate as f32) as usize)
+            .map(|i| amp * (i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin())
+            .collect()
+    }
+
+    #[test]
+    fn finds_a_pause_after_speech() {
+        let mut region = tone(0.3, 3.0, 48_000);
+        region.extend(tone(0.001, 1.0, 48_000));
+        let cut = find_pause_cut(&region, 48_000).expect("pause");
+        assert!(cut > 3 * 48_000 && cut < 3 * 48_000 + 48_000 / 2, "cut at {cut}");
+    }
+
+    #[test]
+    fn no_cut_while_still_speaking_or_when_short() {
+        assert!(find_pause_cut(&tone(0.3, 4.0, 48_000), 48_000).is_none());
+        let mut short = tone(0.3, 0.5, 48_000);
+        short.extend(tone(0.001, 0.5, 48_000));
+        assert!(find_pause_cut(&short, 48_000).is_none());
+    }
+
+    #[test]
+    fn long_speech_is_cut_before_the_window_ends() {
+        assert!(find_pause_cut(&tone(0.3, 25.0, 16_000), 16_000).is_some());
     }
 
     #[test]

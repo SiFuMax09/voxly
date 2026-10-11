@@ -34,6 +34,18 @@ pub async fn transcribe(settings: &Settings, wav: Vec<u8>, models_dir: &Path) ->
     transcribe_openai(settings, wav).await
 }
 
+/// Transcribes one chunk of a longer local recording. `context` is the text
+/// before it. Applies the vocabulary like [`transcribe`].
+pub async fn transcribe_chunk(
+    settings: &Settings,
+    wav: Vec<u8>,
+    models_dir: &Path,
+    context: &str,
+) -> Result<String> {
+    let text = crate::local::transcribe_with_context(settings, wav, models_dir, context).await?;
+    Ok(apply_replacements(text.trim(), &settings.vocabulary))
+}
+
 async fn transcribe_openai(settings: &Settings, wav: Vec<u8>) -> Result<String> {
     if settings.api_key.trim().is_empty() {
         bail!("No OpenAI API key set. Add one in the settings.");

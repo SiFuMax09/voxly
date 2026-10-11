@@ -158,12 +158,25 @@ fn wav_to_f32(wav: &[u8]) -> Result<Vec<f32>> {
 }
 
 pub async fn transcribe(settings: &Settings, wav: Vec<u8>, models_dir: &Path) -> Result<String> {
+    transcribe_with_context(settings, wav, models_dir, "").await
+}
+
+/// Like [`transcribe`], but `context` (the text that came before this audio,
+/// used when a recording is transcribed in chunks) steers spelling and
+/// capitalization so the pieces fit together.
+pub async fn transcribe_with_context(
+    settings: &Settings,
+    wav: Vec<u8>,
+    models_dir: &Path,
+    context: &str,
+) -> Result<String> {
     let path = model_path(models_dir, &settings.local_model)?;
     if !path.exists() {
         bail!("The local model '{}' is not downloaded yet. Download it in the settings.", settings.local_model);
     }
     let settings = settings.clone();
-    tokio::task::spawn_blocking(move || run(&settings, &wav, &path))
+    let context = context.to_owned();
+    tokio::task::spawn_blocking(move || run(&settings, &wav, &path, &context))
         .await
         .map_err(|e| anyhow!("transcription thread died: {e}"))?
 }
@@ -249,7 +262,7 @@ pub fn preload(settings: &Settings, models_dir: &Path) {
 }
 
 #[cfg(feature = "local")]
-fn run(settings: &Settings, wav: &[u8], model: &Path) -> Result<String> {
+fn run(settings: &Settings, wav: &[u8], model: &Path, context: &str) -> Result<String> {
     use whisper_rs::{FullParams, SamplingStrategy};
 
     let engine = engine(model, settings.use_gpu, settings.flash_attn)?;
@@ -270,9 +283,17 @@ fn run(settings: &Settings, wav: &[u8], model: &Path) -> Result<String> {
     params.set_print_realtime(false);
     params.set_print_special(false);
     params.set_print_timestamps(false);
-    let prompt = crate::vocabulary::build_prompt(&settings.vocabulary);
-    if let Some(p) = &prompt {
-        params.set_initial_prompt(p);
+    let mut prompt = crate::vocabulary::build_prompt(&settings.vocabulary).unwrap_or_default();
+    if !context.trim().is_empty() {
+        // The end of the previous chunk, cut at a character boundary.
+        let tail: String = context.trim().chars().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect();
+        if !prompt.is_empty() {
+            prompt.push(' ');
+        }
+        prompt.push_str(&tail);
+    }
+    if !prompt.is_empty() {
+        params.set_initial_prompt(&prompt);
     }
     state.full(params, &samples).map_err(|e| anyhow!("transcription failed: {e}"))?;
 
@@ -376,12 +397,12 @@ pub fn benchmark(
             format!("CPU, {threads} threads, {}", if beam > 1 { "beam search" } else { "greedy" })
         };
         // The first run loads the model and warms the GPU up, so it is not timed.
-        let mut text = run(&s, wav, &path)?;
+        let mut text = run(&s, wav, &path, "")?;
         let runs = if gpu { 2 } else { 1 };
         let mut best = u128::MAX;
         for _ in 0..runs {
             let t = std::time::Instant::now();
-            text = run(&s, wav, &path)?;
+            text = run(&s, wav, &path, "")?;
             best = best.min(t.elapsed().as_millis());
         }
         if i == 0 {
@@ -411,7 +432,7 @@ pub fn benchmark(
 }
 
 #[cfg(not(feature = "local"))]
-fn run(_: &Settings, _: &[u8], _: &Path) -> Result<String> {
+fn run(_: &Settings, _: &[u8], _: &Path, _: &str) -> Result<String> {
     Err(anyhow!("this build does not include local transcription"))
 }
 
