@@ -36,6 +36,31 @@ pub fn build_prompt(terms: &[Term]) -> Option<String> {
     })
 }
 
+/// Phrases Whisper invents for silence or noise: it was trained on subtitled
+/// videos, so credits and sign-offs appear where nothing was said.
+const HALLUCINATIONS: &[&str] = &[
+    r"untertitelung des zdf(?:[ ,]+für funk)?[ ,]*\d{0,4}",
+    r"untertitel der amara\.org-community",
+    r"untertitel im auftrag des zdf[ ,]*\d{0,4}",
+    r"untertitel von [\w ]+ für funk[ ,]*\d{0,4}",
+    r"copyright (?:wdr|swr|ndr|br) \d{4}",
+    r"(?:vielen|herzlichen) dank fürs zuschauen[.!]?",
+    r"danke fürs zuschauen[.!]?",
+    r"subtitles by the amara\.org community",
+    r"thank(?:s| you) for watching[.!]?",
+];
+
+/// Removes such invented phrases from a transcript.
+pub fn strip_hallucinations(text: &str) -> String {
+    let mut out = text.to_owned();
+    for phrase in HALLUCINATIONS {
+        if let Ok(re) = RegexBuilder::new(phrase).case_insensitive(true).build() {
+            out = re.replace_all(&out, "").into_owned();
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Rewrites known mis-hearings to the canonical spelling.
 pub fn apply_replacements(text: &str, terms: &[Term]) -> String {
     let mut text = text.to_owned();
@@ -54,6 +79,16 @@ pub fn apply_replacements(text: &str, terms: &[Term]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn strips_invented_credits() {
+        assert_eq!(
+            super::strip_hallucinations("Das war es Untertitelung des ZDF, 2020 Untertitelung des ZDF, 2020"),
+            "Das war es"
+        );
+        assert_eq!(super::strip_hallucinations("Vielen Dank fürs Zuschauen!"), "");
+        assert_eq!(super::strip_hallucinations("Wir sehen uns Zuschauen im Dank"), "Wir sehen uns Zuschauen im Dank");
+    }
+
     use super::*;
 
     fn term(t: &str, s: &[&str]) -> Term {

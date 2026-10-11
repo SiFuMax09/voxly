@@ -29,6 +29,7 @@ struct ErrorDetail {
 pub async fn transcribe(settings: &Settings, wav: Vec<u8>, models_dir: &Path) -> Result<String> {
     if settings.backend == "local" {
         let text = crate::local::transcribe(settings, wav, models_dir).await?;
+        let text = crate::vocabulary::strip_hallucinations(&text);
         return Ok(apply_replacements(text.trim(), &settings.vocabulary));
     }
     transcribe_openai(settings, wav).await
@@ -43,6 +44,7 @@ pub async fn transcribe_chunk(
     context: &str,
 ) -> Result<String> {
     let text = crate::local::transcribe_with_context(settings, wav, models_dir, context).await?;
+    let text = crate::vocabulary::strip_hallucinations(&text);
     Ok(apply_replacements(text.trim(), &settings.vocabulary))
 }
 

@@ -31,6 +31,11 @@ pub fn wav_seconds(wav: &[u8]) -> u64 {
     (wav.len().saturating_sub(44) as u64) / (2 * 16_000)
 }
 
+/// Duration of a 16 kHz mono 16-bit WAV in milliseconds.
+pub fn wav_millis(wav: &[u8]) -> u64 {
+    (wav.len().saturating_sub(44) as u64) / 32
+}
+
 impl Usage {
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {

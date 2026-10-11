@@ -152,6 +152,15 @@ pub fn configure(app: &AppHandle, keys: [(Action, &str); 3]) -> Result<(), Strin
     if bad.is_empty() { Ok(()) } else { Err(bad.join(", ")) }
 }
 
+/// True while Ctrl, Shift, Alt or Super is physically held down. Text cannot
+/// be pasted then: the held key would turn Ctrl+V into another shortcut.
+pub fn modifiers_held() -> bool {
+    STATE.get().is_some_and(|s| {
+        let s = s.lock().unwrap();
+        ALL_MODS.iter().flat_map(|g| g.iter()).any(|k| s.pressed.contains(k))
+    })
+}
+
 /// True if the keyboards can be read, so hotkeys will work.
 pub fn has_access() -> bool {
     evdev::enumerate().any(|(_, d)| d.supported_keys().is_some_and(|k| k.contains(KeyCode::KEY_A)))

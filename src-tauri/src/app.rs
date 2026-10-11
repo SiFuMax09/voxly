@@ -24,6 +24,9 @@ struct AppState {
     /// Characters inserted by the last paste, for the "delete that" command.
     inserted: Mutex<usize>,
     stream: Mutex<Option<StreamJob>>,
+    /// Streamed text that could not be pasted yet because a modifier key of
+    /// the hotkey was still held down.
+    pending: Mutex<String>,
     busy: Mutex<bool>,
 }
 
@@ -76,6 +79,7 @@ fn start_recording(app: &AppHandle) {
             // whole audio for both sides.
             if settings.streaming && settings.backend == "local" && !settings.compare_mode {
                 *state.inserted.lock().unwrap() = 0;
+                state.pending.lock().unwrap().clear();
                 let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let handle = tauri::async_runtime::spawn(stream_worker(app.clone(), stop.clone()));
                 *state.stream.lock().unwrap() = Some(StreamJob { stop, handle });
@@ -85,15 +89,60 @@ fn start_recording(app: &AppHandle) {
     }
 }
 
-/// Types one finished chunk into the focused app right away.
+fn modifiers_held() -> bool {
+    #[cfg(target_os = "linux")]
+    return crate::evdev_hotkeys::modifiers_held();
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
+/// Types one finished chunk into the focused app right away. While a
+/// modifier of the hotkey is held, the text is kept and goes in with the next
+/// chunk that finds the keys released, or at the end of the dictation.
 fn insert_live(app: &AppHandle, piece: &str, paste: bool) {
     if !paste {
         return;
     }
-    if let Err(e) = set_clipboard(app, piece) {
+    let state = app.state::<AppState>();
+    if modifiers_held() {
+        let first = {
+            let mut pending = state.pending.lock().unwrap();
+            let first = pending.is_empty();
+            pending.push_str(piece);
+            first
+        };
+        if first {
+            let _ = app.emit(
+                "notice",
+                "Live typing waits while Ctrl, Alt or Shift of the hotkey are held. \
+                 Use a function key such as F9 as hold hotkey to type while you speak.",
+            );
+        }
+        return;
+    }
+    let text = std::mem::take(&mut *state.pending.lock().unwrap()) + piece;
+    paste_now(app, &text);
+}
+
+/// Pastes the text that was held back, once the hotkey keys are released.
+fn flush_pending(app: &AppHandle) {
+    for _ in 0..40 {
+        if !modifiers_held() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let text = std::mem::take(&mut *app.state::<AppState>().pending.lock().unwrap());
+    if !text.is_empty() {
+        paste_now(app, &text);
+    }
+}
+
+fn paste_now(app: &AppHandle, text: &str) {
+    if let Err(e) = set_clipboard(app, text) {
         return report(app, format!("clipboard: {e}"));
     }
-    *app.state::<AppState>().inserted.lock().unwrap() += piece.chars().count();
+    *app.state::<AppState>().inserted.lock().unwrap() += text.chars().count();
     // Wait until the paste is done: the clipboard is overwritten again by the
     // next chunk (and by the whole text at the end), so a paste that is still
     // queued would insert the wrong text.
@@ -241,6 +290,11 @@ async fn stream_worker(
             Err(_) => wav,
         };
 
+        // Less than half a second of speech is mostly noise; Whisper would
+        // make something up.
+        if usage::wav_millis(&wav) < 500 {
+            continue;
+        }
         let settings = state.settings.lock().unwrap().clone();
         let raw = voxly_core::transcribe::transcribe_chunk(&settings, wav, &state.models_dir, &context_of(&out.before))
             .await
@@ -339,7 +393,7 @@ fn stop_recording(app: &AppHandle) {
                 Err(_) => Some(wav),
             };
             let mut failure = None;
-            if let Some(w) = tail {
+            if let Some(w) = tail.filter(|w| usage::wav_millis(w) >= 500) {
                 let context = context_of(&out.before);
                 match voxly_core::transcribe::transcribe_chunk(&settings, w, &state.models_dir, &context).await {
                     Ok(raw) => {
@@ -353,6 +407,7 @@ fn stop_recording(app: &AppHandle) {
                     Err(e) => failure = Some(e),
                 }
             }
+            flush_pending(&app);
             match failure {
                 Some(e) => Err(e),
                 None if out.typed.trim().is_empty() => Err(anyhow::anyhow!("No speech detected.")),
@@ -1201,6 +1256,7 @@ pub fn run() {
                 last: Mutex::new(String::new()),
                 inserted: Mutex::new(0),
                 stream: Mutex::new(None),
+                pending: Mutex::new(String::new()),
                 busy: Mutex::new(false),
             });
             preload_model(app.handle());
