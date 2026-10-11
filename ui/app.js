@@ -103,6 +103,15 @@ function renderUsage() {
   $('st-avg').textContent = fmt(active ? Math.round(total / active) : 0);
   $('st-wpm').textContent = fmt(secs >= 10 ? Math.round(total / (secs / 60)) : 0);
 
+  // Time and money saved.
+  const wpm = Math.max(5, Number($('typing-wpm').value) || 40);
+  const typing = (total / wpm) * 60;
+  const dur = (sec) => (sec >= 3600 ? `${(sec / 3600).toFixed(1)} h` : `${Math.round(sec / 60)} min`);
+  $('st-typing').textContent = dur(typing);
+  $('st-saved').textContent = dur(Math.max(0, typing - secs));
+  const perMin = ($('model').value || '').includes('mini') ? 0.003 : 0.006;
+  $('st-cloud').textContent = `$${((secs / 60) * perMin).toFixed(2)}`;
+
   // Heatmap: columns are weeks (Monday first), rows are weekdays.
   const dow = (today.getDay() + 6) % 7; // Monday = 0
   const start = at(dow + (WEEKS - 1) * 7);
@@ -384,6 +393,8 @@ function render() {
   $('compare-mode').checked = !!settings.compare_mode;
   $('trim-silence').checked = settings.trim_silence !== false;
   $('voice-commands').checked = settings.voice_commands !== false;
+  $('typing-wpm').value = settings.typing_wpm || 40;
+  if (!$('tab-usage').hidden) renderUsage();
   $('mic').value = settings.input_device || '';
   $('use-gpu').checked = settings.use_gpu !== false;
   $('overlay-position').value = settings.overlay_position || 'top';
@@ -411,6 +422,7 @@ function collect() {
     compare_mode: $('compare-mode').checked,
     trim_silence: $('trim-silence').checked,
     voice_commands: $('voice-commands').checked,
+    typing_wpm: Math.max(5, Number($('typing-wpm').value) || 40),
     input_device: $('mic').value,
     use_gpu: $('use-gpu').checked,
     overlay_position: $('overlay-position').value,
@@ -440,6 +452,7 @@ async function save() {
 }
 document.querySelector('main').addEventListener('input', scheduleSave);
 document.querySelector('main').addEventListener('change', scheduleSave);
+$('typing-wpm').addEventListener('input', () => { if (usage) renderUsage(); });
 
 (async () => {
   settings = await invoke('get_settings');

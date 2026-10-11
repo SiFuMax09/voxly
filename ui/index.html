@@ -164,6 +164,18 @@
           <div><b id="st-wpm">0</b><span>Words / minute</span></div>
         </div>
       </section>
+      <section>
+        <h2>Time and money saved</h2>
+        <div class="stats">
+          <div><b id="st-saved">0 min</b><span>Time saved vs. typing</span></div>
+          <div><b id="st-typing">0 min</b><span>Typing would take</span></div>
+          <div><b id="st-cloud">$0.00</b><span>Cloud cost, same audio</span></div>
+        </div>
+        <label>Your typing speed (words per minute)
+          <input id="typing-wpm" type="number" min="5" max="250" step="1">
+        </label>
+        <p class="hint">Time saved is the typing time for the words you dictated minus the time you spent speaking. The cloud cost is an estimate for sending all recorded audio to the OpenAI model selected in the settings (about $0.006 per minute, $0.003 for the mini model); local transcription costs nothing.</p>
+      </section>
     </div>
 
     <p id="saved" hidden>Saved ✓</p>

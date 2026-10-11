@@ -47,6 +47,8 @@ pub struct Settings {
     pub trim_silence: bool,
     /// Understand spoken commands such as "new line", "comma" or "delete that".
     pub voice_commands: bool,
+    /// The user's typing speed in words per minute, for the time-saved figure.
+    pub typing_wpm: u32,
     /// Transcribe every recording with both the local model and the OpenAI
     /// API, and show time and text side by side. Needs both to be set up.
     pub compare_mode: bool,
@@ -79,6 +81,7 @@ impl Default for Settings {
             use_gpu: true,
             trim_silence: true,
             voice_commands: true,
+            typing_wpm: 40,
             compare_mode: false,
             input_device: String::new(),
             flash_attn: true,
