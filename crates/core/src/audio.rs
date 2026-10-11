@@ -117,20 +117,36 @@ where
     )?)
 }
 
+/// Band-limited resampling (Hann-windowed sinc). Plain linear interpolation
+/// folds everything above 8 kHz back into the speech band, which smears
+/// fricatives and hurts recognition, especially for fast speech.
 fn resample(input: &[f32], from: u32) -> Vec<f32> {
     if from == TARGET_RATE {
         return input.to_vec();
     }
     let ratio = from as f64 / TARGET_RATE as f64;
     let len = (input.len() as f64 / ratio) as usize;
+    // Cut off at the target Nyquist frequency when downsampling.
+    let cutoff = (1.0 / ratio).min(1.0);
+    const ZEROS: f64 = 8.0;
+    let half = (ZEROS / cutoff).ceil() as isize;
+    let sinc = |x: f64| if x.abs() < 1e-9 { 1.0 } else { (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x) };
     (0..len)
         .map(|i| {
             let pos = i as f64 * ratio;
-            let idx = pos as usize;
-            let frac = (pos - idx as f64) as f32;
-            let a = input[idx];
-            let b = *input.get(idx + 1).unwrap_or(&a);
-            a + (b - a) * frac
+            let center = pos.floor() as isize;
+            let mut acc = 0.0f64;
+            let mut norm = 0.0f64;
+            for k in (center - half + 1)..=(center + half) {
+                let d = k as f64 - pos;
+                let w = 0.5 * (1.0 + (std::f64::consts::PI * d / half as f64).cos());
+                let c = cutoff * sinc(cutoff * d) * w;
+                norm += c;
+                if k >= 0 && (k as usize) < input.len() {
+                    acc += input[k as usize] as f64 * c;
+                }
+            }
+            (acc / norm) as f32
         })
         .collect()
 }
@@ -162,6 +178,17 @@ mod tests {
     fn resample_halves_length_for_32k() {
         let out = resample(&vec![0.0; 32_000], 32_000);
         assert_eq!(out.len(), 16_000);
+    }
+
+    #[test]
+    fn resample_removes_content_above_target_nyquist() {
+        // A 20 kHz tone at 48 kHz must not alias into the 16 kHz output.
+        let input: Vec<f32> = (0..48_000)
+            .map(|n| (2.0 * std::f32::consts::PI * 20_000.0 * n as f32 / 48_000.0).sin())
+            .collect();
+        let out = resample(&input, 48_000);
+        let peak = out[200..out.len() - 200].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak < 0.05, "aliased energy: {peak}");
     }
 
     #[test]

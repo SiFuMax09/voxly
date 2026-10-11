@@ -3846,6 +3846,7 @@ dependencies = [
  "gtk",
  "heck 0.5.0",
  "http",
+ "image",
  "jni",
  "libc",
  "log",
@@ -4526,10 +4527,12 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voxly"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "enigo",
+ "objc2",
  "serde",
  "serde_json",
  "tauri",
@@ -4541,7 +4544,7 @@ dependencies = [
 
 [[package]]
 name = "voxly-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "cpal",

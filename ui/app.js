@@ -6,6 +6,150 @@ if (/android|iphone|ipad/i.test(navigator.userAgent)) document.body.classList.ad
 
 let settings = null;
 
+// ---- tabs ---------------------------------------------------------------
+function showTab(name) {
+  document.querySelectorAll('#tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
+  document.querySelectorAll('.tab').forEach((t) => (t.hidden = t.id !== `tab-${name}`));
+  try { localStorage.setItem('tab', name); } catch {}
+  if (name === 'usage') renderUsage();
+  if (name === 'history') renderHistory();
+}
+document.querySelectorAll('#tabs button').forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
+
+// ---- history ------------------------------------------------------------
+let history = { entries: [] };
+function renderHistory() {
+  const q = $('history-search').value.trim().toLowerCase();
+  const list = $('history');
+  const shown = history.entries.filter((e) => !q || e.text.toLowerCase().includes(q)).reverse();
+  list.replaceChildren(...shown.map((e) => {
+    const row = document.createElement('div');
+    row.className = 'entry';
+    const meta = document.createElement('div');
+    meta.className = 'entry-meta';
+    const when = document.createElement('span');
+    when.className = 'grow';
+    const words = e.text.trim().split(/\s+/).length;
+    when.textContent = `${new Date(e.id).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })} · ${words} word${words === 1 ? '' : 's'}`;
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.textContent = 'Copy';
+    copy.onclick = async () => {
+      try { await navigator.clipboard.writeText(e.text); copy.textContent = 'Copied'; } catch { copy.textContent = 'Failed'; }
+      setTimeout(() => (copy.textContent = 'Copy'), 1200);
+    };
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'del';
+    del.textContent = 'Delete';
+    del.onclick = async () => { history = await invoke('delete_history_entry', { id: e.id }); renderHistory(); };
+    meta.append(when, copy, del);
+    const text = document.createElement('p');
+    text.className = 'entry-text';
+    text.textContent = e.text;
+    row.append(meta, text);
+    return row;
+  }));
+  $('history-empty').hidden = shown.length > 0;
+  $('history-empty').textContent = q ? 'No matches.' : 'Nothing here yet. Your dictations show up here.';
+  $('history-clear').hidden = history.entries.length === 0;
+}
+$('history-search').addEventListener('input', renderHistory);
+let clearArmed;
+$('history-clear').onclick = async () => {
+  if (!clearArmed) {
+    $('history-clear').textContent = 'Click again to delete everything';
+    clearArmed = setTimeout(() => { clearArmed = null; $('history-clear').textContent = 'Clear history'; }, 3000);
+    return;
+  }
+  clearTimeout(clearArmed);
+  clearArmed = null;
+  $('history-clear').textContent = 'Clear history';
+  history = await invoke('clear_history');
+  renderHistory();
+};
+listen('history', (e) => { history = e.payload; renderHistory(); });
+
+// ---- usage --------------------------------------------------------------
+let usage = { days: {} };
+const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const fmt = (n) => n.toLocaleString();
+const WEEKS = 26;
+
+function renderUsage() {
+  const days = usage.days || {};
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  const at = (offset) => { const d = new Date(today); d.setDate(d.getDate() - offset); return d; };
+  const words = (d) => days[dayKey(d)]?.words ?? 0;
+
+  // Headline numbers.
+  let week = 0;
+  for (let i = 0; i < 7; i++) week += words(at(i));
+  const all = Object.values(days);
+  const total = all.reduce((a, d) => a + d.words, 0);
+  const recs = all.reduce((a, d) => a + d.recordings, 0);
+  const secs = all.reduce((a, d) => a + d.seconds, 0);
+  const active = all.filter((d) => d.words > 0).length;
+  // A streak survives until the end of today, so start from yesterday if today is still empty.
+  let streak = 0;
+  for (let i = words(at(0)) > 0 ? 0 : 1; words(at(i)) > 0; i++) streak++;
+  $('st-today').textContent = fmt(words(at(0)));
+  $('st-week').textContent = fmt(week);
+  $('st-total').textContent = fmt(total);
+  $('st-streak').textContent = fmt(streak);
+  $('st-rec').textContent = fmt(recs);
+  $('st-time').textContent = secs >= 3600 ? `${(secs / 3600).toFixed(1)} h` : `${Math.round(secs / 60)} min`;
+  $('st-avg').textContent = fmt(active ? Math.round(total / active) : 0);
+  $('st-wpm').textContent = fmt(secs >= 10 ? Math.round(total / (secs / 60)) : 0);
+
+  // Heatmap: columns are weeks (Monday first), rows are weekdays.
+  const dow = (today.getDay() + 6) % 7; // Monday = 0
+  const start = at(dow + (WEEKS - 1) * 7);
+  const max = Math.max(0, ...Object.values(days).map((d) => d.words));
+  const level = (w) => (w <= 0 ? 0 : Math.min(4, Math.ceil((w / max) * 4)));
+  const heat = $('heat');
+  const months = $('heat-months');
+  heat.replaceChildren();
+  months.replaceChildren();
+  let lastMonth = -1;
+  for (let i = 0; i < WEEKS * 7; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    const cell = document.createElement('i');
+    const w = words(d);
+    if (d > today) cell.className = 'future';
+    else {
+      cell.className = `l${level(w)}`;
+      const label = `${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}: ${fmt(w)} word${w === 1 ? '' : 's'}`;
+      cell.title = label;
+      cell.dataset.label = label;
+    }
+    heat.appendChild(cell);
+    if (i % 7 === 0 && d.getMonth() !== lastMonth) {
+      lastMonth = d.getMonth();
+      const m = document.createElement('span');
+      m.textContent = d.toLocaleDateString(undefined, { month: 'short' });
+      m.style.left = `${(i / 7) * 16}px`;
+      months.appendChild(m);
+    }
+  }
+  months.style.width = `${WEEKS * 16}px`;
+  $('heat-detail').textContent = 'Hover or tap a day.';
+}
+$('heat').addEventListener('click', (e) => {
+  const cell = e.target.closest('i');
+  if (!cell?.dataset.label) return;
+  document.querySelectorAll('#heat i.sel').forEach((c) => c.classList.remove('sel'));
+  cell.classList.add('sel');
+  $('heat-detail').textContent = cell.dataset.label;
+});
+$('heat').addEventListener('mouseover', (e) => {
+  const cell = e.target.closest('i');
+  if (cell?.dataset.label) $('heat-detail').textContent = cell.dataset.label;
+});
+listen('usage', (e) => { usage = e.payload; renderUsage(); });
+
 // ---- recording ----------------------------------------------------------
 const labels = { idle: 'Record', recording: 'Stop', transcribing: '…' };
 function setStatus(s) {
@@ -128,7 +272,11 @@ function render() {
   $('local-model').value = settings.local_model;
   $('api-key').value = settings.api_key;
   $('model').value = settings.model;
-  $('language').value = settings.language;
+  // The language is always forced; never fall back to Whisper's auto-detect.
+  const sel = $('language');
+  const wanted = settings.language || navigator.language.slice(0, 2);
+  sel.value = [...sel.options].some((o) => o.value === wanted) ? wanted : 'en';
+  if (sel.value !== settings.language) scheduleSave();
   setHotkey($('hk-hold'), settings.hotkeys.hold);
   setHotkey($('hk-toggle'), settings.hotkeys.toggle);
   setHotkey($('hk-paste'), settings.hotkeys.paste_last);
@@ -186,5 +334,10 @@ document.querySelector('main').addEventListener('change', scheduleSave);
   render();
   await refreshModels();
   $('last').value = await invoke('get_last');
+  usage = await invoke('get_usage');
+  history = await invoke('get_history');
+  let tab = 'home';
+  try { tab = localStorage.getItem('tab') || 'home'; } catch {}
+  showTab(document.getElementById(`tab-${tab}`) ? tab : 'home');
   setStatus('idle');
 })();

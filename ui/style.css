@@ -38,3 +38,38 @@ kbd { min-width: 26px; padding: 2px 7px; text-align: center; font: 600 14px/1.4 
 header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 header h1 { font-size: 20px; margin: 0; }
 header img { border-radius: 9px; }
+
+nav#tabs { display: flex; gap: 4px; padding: 4px; margin-bottom: 14px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+nav#tabs button { flex: 1; width: auto; padding: 7px 4px; font-size: 14px; background: transparent; color: var(--muted); border-radius: 8px; }
+nav#tabs button[aria-selected="true"] { background: var(--accent); color: #fff; }
+.tab[hidden] { display: none; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.stats div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.stats b { font-size: 22px; font-variant-numeric: tabular-nums; }
+.stats span { color: var(--muted); font-size: 12px; }
+@media (max-width: 420px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+#heat-scroll { overflow-x: auto; padding-bottom: 4px; }
+#heat-months { position: relative; height: 16px; font-size: 11px; color: var(--muted); }
+#heat-months span { position: absolute; }
+#heat { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 13px); grid-auto-columns: 13px; gap: 3px; width: max-content; }
+#heat i, .legend i { width: 13px; height: 13px; border-radius: 3px; background: var(--line); display: block; }
+#heat i { cursor: default; }
+#heat i.future { visibility: hidden; }
+#heat i.sel { outline: 2px solid var(--fg); outline-offset: 1px; }
+.l1 { background: color-mix(in srgb, var(--accent) 28%, var(--line)) !important; }
+.l2 { background: color-mix(in srgb, var(--accent) 52%, var(--line)) !important; }
+.l3 { background: color-mix(in srgb, var(--accent) 76%, var(--line)) !important; }
+.l4 { background: var(--accent) !important; }
+.legend { display: flex; align-items: center; gap: 4px; justify-content: flex-end; margin-top: 8px; color: var(--muted); font-size: 11px; }
+.legend span:first-child { margin-right: 2px; } .legend span:last-child { margin-left: 2px; }
+#heat-detail { margin: 8px 0 0; min-height: 1.4em; }
+
+#history-search { margin: 0 0 10px; }
+.entry { padding: 10px 0; border-top: 1px solid var(--line); }
+.entry:first-child { border-top: 0; }
+.entry-meta { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.entry-meta .grow { flex: 1; }
+.entry-meta button { width: auto; padding: 2px 8px; font-size: 12px; background: transparent; color: var(--accent); border: 1px solid var(--line); border-radius: 6px; }
+.entry-meta button.del { color: var(--muted); }
+.entry-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+#history-clear { margin-top: 10px; }

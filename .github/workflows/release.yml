@@ -1,7 +1,7 @@
 name: Release
 
 # Push a tag like v0.1.0 to build installers for all desktop platforms and
-# attach them to a draft GitHub release.
+# publish them as a GitHub release.
 on:
   push:
     tags: ["v*"]
@@ -66,5 +66,5 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: Voxly ${{ github.ref_name }}
           releaseBody: "Download the installer for your system below."
-          releaseDraft: true
+          releaseDraft: false
           args: ${{ matrix.args }}

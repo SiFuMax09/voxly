@@ -10,6 +10,15 @@
 <body>
   <main>
     <header><img src="logo.svg" alt="" width="36" height="36"><h1>Voxly</h1></header>
+    <nav id="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="home" aria-selected="true">Home</button>
+      <button type="button" role="tab" data-tab="settings">Settings</button>
+      <button type="button" role="tab" data-tab="vocabulary">Vocabulary</button>
+      <button type="button" role="tab" data-tab="history">History</button>
+      <button type="button" role="tab" data-tab="usage">Usage</button>
+    </nav>
+
+    <div class="tab" id="tab-home">
     <section class="hero">
       <button id="rec" aria-label="Record"><span id="rec-label">Record</span></button>
       <p id="status">Idle</p>
@@ -22,6 +31,9 @@
       <button id="paste-last" class="secondary">Paste last recording</button>
     </section>
 
+    </div>
+
+    <div class="tab" id="tab-settings" hidden>
     <section>
       <h2>Transcription</h2>
       <label>Backend
@@ -45,14 +57,23 @@
         <button id="download" class="secondary" type="button" hidden>Download model</button>
         <p id="dl-status" class="hint" hidden></p>
       </div>
-      <label>Language (ISO code, empty = auto) <input id="language" placeholder="en"></label>
-    </section>
-
-    <section>
-      <h2>Vocabulary</h2>
-      <p class="hint">Terms are sent to Whisper as a spelling hint. "Sounds like" phrases are rewritten to the term afterwards.</p>
-      <div id="terms"></div>
-      <button id="add-term" class="secondary">Add term</button>
+      <label>Output language
+        <select id="language">
+          <option value="de">German</option>
+          <option value="en">English</option>
+          <option value="fr">French</option>
+          <option value="es">Spanish</option>
+          <option value="it">Italian</option>
+          <option value="pt">Portuguese</option>
+          <option value="nl">Dutch</option>
+          <option value="pl">Polish</option>
+          <option value="tr">Turkish</option>
+          <option value="ru">Russian</option>
+          <option value="uk">Ukrainian</option>
+          <option value="ja">Japanese</option>
+          <option value="zh">Chinese</option>
+        </select>
+      </label>
     </section>
 
     <section class="desktop-only">
@@ -63,6 +84,58 @@
       <label>Paste last recording <div class="hotkey" id="hk-paste" tabindex="0" role="button"></div></label>
       <label class="check"><input type="checkbox" id="auto-paste"> Paste into the focused app automatically</label>
     </section>
+
+    </div>
+
+    <div class="tab" id="tab-vocabulary" hidden>
+    <section>
+      <h2>Vocabulary</h2>
+      <p class="hint">Terms are sent to Whisper as a spelling hint. "Sounds like" phrases are rewritten to the term afterwards.</p>
+      <div id="terms"></div>
+      <button id="add-term" class="secondary">Add term</button>
+    </section>
+    </div>
+
+    <div class="tab" id="tab-history" hidden>
+      <section>
+        <h2>History</h2>
+        <p class="hint">Stored only on this device (last 500 dictations).</p>
+        <input id="history-search" type="search" placeholder="Search">
+        <div id="history"></div>
+        <p id="history-empty" class="hint" hidden>Nothing here yet. Your dictations show up here.</p>
+        <button id="history-clear" class="secondary" type="button">Clear history</button>
+      </section>
+    </div>
+
+    <div class="tab" id="tab-usage" hidden>
+      <section>
+        <h2>Words dictated</h2>
+        <div class="stats">
+          <div><b id="st-today">0</b><span>Today</span></div>
+          <div><b id="st-week">0</b><span>Last 7 days</span></div>
+          <div><b id="st-total">0</b><span>Total</span></div>
+          <div><b id="st-streak">0</b><span>Day streak</span></div>
+        </div>
+      </section>
+      <section>
+        <h2>Activity</h2>
+        <div id="heat-scroll">
+          <div id="heat-months"></div>
+          <div id="heat"></div>
+        </div>
+        <div class="legend"><span>Less</span><i class="l0"></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i><span>More</span></div>
+        <p id="heat-detail" class="hint">Hover or tap a day.</p>
+      </section>
+      <section>
+        <h2>Overview</h2>
+        <div class="stats">
+          <div><b id="st-rec">0</b><span>Recordings</span></div>
+          <div><b id="st-time">0 min</b><span>Time spoken</span></div>
+          <div><b id="st-avg">0</b><span>Words / active day</span></div>
+          <div><b id="st-wpm">0</b><span>Words / minute</span></div>
+        </div>
+      </section>
+    </div>
 
     <p id="saved" hidden>Saved ✓</p>
   </main>

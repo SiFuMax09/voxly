@@ -132,7 +132,7 @@ fn run(settings: &Settings, wav: &[u8], model: &Path) -> Result<String> {
 
     let samples = wav_to_f32(wav)?;
     let mut state = ctx.create_state().map_err(|e| anyhow!("{e}"))?;
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    let mut params = FullParams::new(SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 });
     let lang = settings.language.trim();
     params.set_language(if lang.is_empty() { None } else { Some(lang) });
     params.set_print_progress(false);
