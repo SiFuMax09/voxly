@@ -13,15 +13,65 @@ pub struct ModelInfo {
     pub id: &'static str,
     pub file: &'static str,
     pub label: &'static str,
+    /// Hugging Face repository the file is downloaded from.
+    pub repo: &'static str,
+    /// SHA-256 of the file, checked after the download.
+    pub sha256: Option<&'static str>,
 }
 
+const WHISPER_CPP: &str = "ggerganov/whisper.cpp";
+
 pub const MODELS: &[ModelInfo] = &[
-    ModelInfo { id: "base", file: "ggml-base.bin", label: "Base (142 MB, fast, ok accuracy)" },
-    ModelInfo { id: "small", file: "ggml-small.bin", label: "Small (466 MB, good)" },
+    ModelInfo { id: "base", file: "ggml-base.bin", label: "Base (142 MB, fast, ok accuracy)", repo: WHISPER_CPP, sha256: None },
+    ModelInfo { id: "small", file: "ggml-small.bin", label: "Small (466 MB, good)", repo: WHISPER_CPP, sha256: None },
+    ModelInfo {
+        id: "small-q5",
+        file: "ggml-small-q5_1.bin",
+        label: "Small, quantized (181 MB, fast, good)",
+        repo: WHISPER_CPP,
+        sha256: Some("ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"),
+    },
+    ModelInfo {
+        id: "medium-q5",
+        file: "ggml-medium-q5_0.bin",
+        label: "Medium, quantized (514 MB, very good)",
+        repo: WHISPER_CPP,
+        sha256: Some("19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f"),
+    },
     ModelInfo {
         id: "large-v3-turbo",
         file: "ggml-large-v3-turbo-q5_0.bin",
         label: "Large v3 Turbo, quantized (574 MB, best)",
+        repo: WHISPER_CPP,
+        sha256: None,
+    },
+    ModelInfo {
+        id: "large-v3-turbo-q8",
+        file: "ggml-large-v3-turbo-q8_0.bin",
+        label: "Large v3 Turbo, high quality (874 MB, best, needs a GPU)",
+        repo: WHISPER_CPP,
+        sha256: Some("317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1"),
+    },
+    ModelInfo {
+        id: "large-v3-q5",
+        file: "ggml-large-v3-q5_0.bin",
+        label: "Large v3, quantized (1.0 GB, most accurate, slower)",
+        repo: WHISPER_CPP,
+        sha256: Some("d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1"),
+    },
+    ModelInfo {
+        id: "distil-large-v3",
+        file: "ggml-distil-large-v3.bin",
+        label: "Distil Large v3 (1.4 GB, very fast, English only)",
+        repo: "distil-whisper/distil-large-v3-ggml",
+        sha256: Some("2883a11b90fb10ed592d826edeaee7d2929bf1ab985109fe9e1e7b4d2b69a298"),
+    },
+    ModelInfo {
+        id: "german-turbo",
+        file: "ggml-large-v3-turbo-german-q5_0.bin",
+        label: "German Large v3 Turbo, quantized (574 MB, German only, community conversion of primeline)",
+        repo: "Pomni/whisper-large-v3-turbo-german-ggml-allquants",
+        sha256: Some("15e92e3db0993c52fffa781513eec9253475331c1be808f8fb409285c9d9d030"),
     },
 ];
 
@@ -62,7 +112,8 @@ pub async fn download_model(
     let file = dest.file_name().unwrap().to_string_lossy().into_owned();
     std::fs::create_dir_all(models_dir)?;
 
-    let url = format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{file}");
+    let m = MODELS.iter().find(|m| m.id == id).ok_or_else(|| anyhow!("unknown model '{id}'"))?;
+    let url = format!("https://huggingface.co/{}/resolve/main/{file}", m.repo);
     let mut res = reqwest::get(&url).await?.error_for_status()?;
     let total = res.content_length().unwrap_or(0);
 
@@ -70,10 +121,13 @@ pub async fn download_model(
     let tmp = dest.with_extension("part");
     let mut out = std::fs::File::create(&tmp)?;
     let mut done = 0u64;
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
     {
         use std::io::Write;
         while let Some(chunk) = res.chunk().await? {
             out.write_all(&chunk)?;
+            hash.update(&chunk);
             done += chunk.len() as u64;
             progress(done, total);
         }
@@ -81,6 +135,13 @@ pub async fn download_model(
     }
     if total > 0 && done != total {
         bail!("download incomplete ({done} of {total} bytes)");
+    }
+    if let Some(expected) = m.sha256 {
+        let actual: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        if actual != expected {
+            let _ = std::fs::remove_file(&tmp);
+            bail!("the downloaded file is corrupt or not the expected model (checksum mismatch)");
+        }
     }
     std::fs::rename(&tmp, &dest)?;
     Ok(())
@@ -357,6 +418,16 @@ fn run(_: &Settings, _: &[u8], _: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_table_is_consistent() {
+        for (i, m) in MODELS.iter().enumerate() {
+            assert!(MODELS[..i].iter().all(|o| o.id != m.id && o.file != m.file), "duplicate {}", m.id);
+            if let Some(h) = m.sha256 {
+                assert!(h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()), "bad checksum for {}", m.id);
+            }
+        }
+    }
 
     #[test]
     fn unknown_model_is_an_error() {
