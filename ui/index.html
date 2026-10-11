@@ -92,6 +92,10 @@
     <section class="desktop-only">
       <h2>Hotkeys</h2>
       <p class="hint">Click a field and press the combination.</p>
+      <div id="hk-access" hidden>
+        <p class="hint">On Wayland the hotkeys need permission to read the keyboard. This installs a small udev rule once and asks for your administrator password.</p>
+        <button id="hk-grant" class="secondary" type="button">Enable global hotkeys</button>
+      </div>
       <label>Hold to record <div class="hotkey" id="hk-hold" tabindex="0" role="button"></div></label>
       <label>Record (toggle) <div class="hotkey" id="hk-toggle" tabindex="0" role="button"></div></label>
       <label>Paste last recording <div class="hotkey" id="hk-paste" tabindex="0" role="button"></div></label>

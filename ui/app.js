@@ -182,6 +182,23 @@ function termRow(t = { term: '', sounds_like: [] }) {
 }
 $('add-term').onclick = () => termRow();
 
+// ---- hotkey access (Wayland) ---------------------------------------------
+async function checkHotkeyAccess() {
+  try { $('hk-access').hidden = (await invoke('hotkey_access')) === 'ok'; } catch {}
+}
+$('hk-grant').onclick = async () => {
+  $('hk-grant').disabled = true;
+  $('error').hidden = true;
+  try {
+    await invoke('grant_hotkey_access');
+  } catch (e) {
+    $('error').textContent = String(e);
+    $('error').hidden = false;
+  }
+  $('hk-grant').disabled = false;
+  checkHotkeyAccess();
+};
+
 // ---- compare mode -------------------------------------------------------
 function cmpSide(d, fastest) {
   const box = document.createElement('div');
@@ -424,6 +441,7 @@ document.querySelector('main').addEventListener('change', scheduleSave);
   settings = await invoke('get_settings');
   await loadMics();
   render();
+  checkHotkeyAccess();
   await refreshModels();
   $('last').value = await invoke('get_last');
   usage = await invoke('get_usage');

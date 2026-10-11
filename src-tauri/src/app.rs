@@ -227,12 +227,14 @@ fn toggle_recording(app: &AppHandle) {
 /// Puts the text on the clipboard and, if asked, types Cmd/Ctrl+V into the
 /// focused application.
 fn output(app: &AppHandle, text: &str, paste: bool) {
-    #[cfg(target_os = "linux")]
-    let wayland_ok = is_wayland() && wayland_copy(text).is_ok();
-    #[cfg(not(target_os = "linux"))]
-    let wayland_ok = false;
-    if !wayland_ok {
-        if let Err(e) = app.clipboard().write_text(text) {
+    if let Err(e) = app.clipboard().write_text(text) {
+        // Some Wayland compositors lack the data-control protocol the
+        // clipboard plugin needs; wl-copy is only a fallback when installed.
+        #[cfg(target_os = "linux")]
+        let fallback = is_wayland() && wayland_copy(text).is_ok();
+        #[cfg(not(target_os = "linux"))]
+        let fallback = false;
+        if !fallback {
             return report(app, format!("clipboard: {e}"));
         }
     }
@@ -255,9 +257,8 @@ pub(crate) fn is_wayland() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
-/// Wayland clipboards belong to the process that set them and the X11
-/// fallback only reaches XWayland apps, so hand the text to `wl-copy`, which
-/// forks into the background and keeps serving it.
+/// Fallback for compositors without the data-control protocol: `wl-copy`
+/// forks into the background and keeps serving the clipboard.
 #[cfg(target_os = "linux")]
 fn wayland_copy(text: &str) -> Result<(), String> {
     use std::io::Write;
@@ -276,13 +277,11 @@ fn wayland_copy(text: &str) -> Result<(), String> {
     status.success().then_some(()).ok_or_else(|| format!("wl-copy: {status}"))
 }
 
-/// Tries wtype (virtual-keyboard protocol, works on Hyprland/sway), then
-/// ydotool (needs ydotoold). Terminals paste with Ctrl+Shift+V, so that is
-/// sent when the focused window is a known terminal class.
+/// Last resort when the built-in virtual keyboard is refused (GNOME has no
+/// such protocol): wtype, then ydotool, if the user has them installed.
 #[cfg(target_os = "linux")]
-fn wayland_paste() -> Result<(), String> {
+fn external_paste(shift: bool) -> Result<(), String> {
     use std::process::Command;
-    let shift = focused_is_terminal();
     let mut wtype = Command::new("wtype");
     wtype.args(["-M", "ctrl"]);
     if shift {
@@ -293,9 +292,8 @@ fn wayland_paste() -> Result<(), String> {
         wtype.args(["-m", "shift"]);
     }
     wtype.args(["-m", "ctrl"]);
-    match wtype.status() {
-        Ok(s) if s.success() => return Ok(()),
-        _ => {}
+    if wtype.status().is_ok_and(|s| s.success()) {
+        return Ok(());
     }
     // ydotool uses raw keycodes: ctrl=29, shift=42, v=47
     let seq: &[&str] = if shift {
@@ -303,12 +301,15 @@ fn wayland_paste() -> Result<(), String> {
     } else {
         &["key", "29:1", "47:1", "47:0", "29:0"]
     };
-    match Command::new("ydotool").args(seq).status() {
-        Ok(s) if s.success() => Ok(()),
-        _ => Err("install wtype (or ydotool + ydotoold) to auto-paste on Wayland".into()),
+    if Command::new("ydotool").args(seq).status().is_ok_and(|s| s.success()) {
+        Ok(())
+    } else {
+        Err("this compositor does not allow simulated keys; paste manually with Ctrl+V".into())
     }
 }
 
+/// Terminals paste with Ctrl+Shift+V. Only Hyprland can tell us which window
+/// has focus; elsewhere plain Ctrl+V is sent.
 #[cfg(target_os = "linux")]
 fn focused_is_terminal() -> bool {
     let Ok(out) = std::process::Command::new("hyprctl")
@@ -329,23 +330,36 @@ fn focused_is_terminal() -> bool {
 
 #[cfg(desktop)]
 fn simulate_paste() -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    if is_wayland() {
-        std::thread::sleep(std::time::Duration::from_millis(80));
-        return wayland_paste();
-    }
     use enigo::{Direction, Enigo, Key, Keyboard, Settings};
-    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
     let modifier = Key::Meta;
     #[cfg(not(target_os = "macos"))]
     let modifier = Key::Control;
+    #[cfg(target_os = "linux")]
+    let shift = focused_is_terminal();
+    #[cfg(not(target_os = "linux"))]
+    let shift = false;
+
     // Give the user a moment to release the hotkey modifiers.
     std::thread::sleep(std::time::Duration::from_millis(80));
-    enigo.key(modifier, Direction::Press).map_err(|e| e.to_string())?;
-    let click = enigo.key(Key::Unicode('v'), Direction::Click);
-    let release = enigo.key(modifier, Direction::Release);
-    click.and(release).map_err(|e| e.to_string())
+    let result = (|| {
+        let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+        enigo.key(modifier, Direction::Press).map_err(|e| e.to_string())?;
+        if shift {
+            enigo.key(Key::Shift, Direction::Press).map_err(|e| e.to_string())?;
+        }
+        let click = enigo.key(Key::Unicode('v'), Direction::Click);
+        if shift {
+            let _ = enigo.key(Key::Shift, Direction::Release);
+        }
+        let release = enigo.key(modifier, Direction::Release);
+        click.and(release).map_err(|e| e.to_string())
+    })();
+    #[cfg(target_os = "linux")]
+    if result.is_err() && is_wayland() {
+        return external_paste(shift);
+    }
+    result
 }
 
 #[cfg(target_os = "linux")]
@@ -633,6 +647,32 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     Ok(())
 }
 
+/// Wayland only: whether the global hotkeys can work yet.
+#[tauri::command]
+fn hotkey_access() -> &'static str {
+    #[cfg(target_os = "linux")]
+    if is_wayland() {
+        return if crate::evdev_hotkeys::has_access() { "ok" } else { "denied" };
+    }
+    "ok"
+}
+
+#[tauri::command]
+async fn grant_hotkey_access(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        tauri::async_runtime::spawn_blocking(crate::evdev_hotkeys::grant_access)
+            .await
+            .map_err(|e| e.to_string())??;
+        return register_hotkeys(&app);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
 #[tauri::command]
 fn list_input_devices() -> Vec<voxly_core::audio::InputDevice> {
     voxly_core::audio::input_devices()
@@ -828,6 +868,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             list_input_devices,
+            hotkey_access,
+            grant_hotkey_access,
             save_settings,
             list_models,
             download_model,

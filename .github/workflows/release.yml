@@ -44,7 +44,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            libasound2-dev libxdo-dev libclang-dev cmake
+            libasound2-dev libxdo-dev libclang-dev cmake \
+            libgtk-layer-shell-dev libvulkan-dev
 
       # Headers and the shader compiler whisper.cpp needs for its Vulkan
       # backend. Sets VULKAN_SDK for the build.

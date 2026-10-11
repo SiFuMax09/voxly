@@ -133,11 +133,46 @@ pub fn configure(app: &AppHandle, keys: [(Action, &str); 3]) -> Result<(), Strin
         let mut s = state.lock().unwrap();
         s.bindings = bindings;
     }
-    static STARTED: OnceLock<()> = OnceLock::new();
-    if STARTED.set(()).is_ok() {
+    // Retried on every call until at least one keyboard could be opened, so
+    // granting access later (see grant_access) works without a restart.
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !STARTED.load(std::sync::atomic::Ordering::SeqCst) {
         start_listeners(app, state)?;
+        STARTED.store(true, std::sync::atomic::Ordering::SeqCst);
     }
     if bad.is_empty() { Ok(()) } else { Err(bad.join(", ")) }
+}
+
+/// True if the keyboards can be read, so hotkeys will work.
+pub fn has_access() -> bool {
+    evdev::enumerate().any(|(_, d)| d.supported_keys().is_some_and(|k| k.contains(KeyCode::KEY_A)))
+}
+
+/// Lets the logged-in user read keyboard devices without joining the `input`
+/// group or logging out again: a udev rule tags keyboards with `uaccess`.
+/// Runs through polkit, so the user sees the normal admin password dialog.
+pub fn grant_access() -> Result<(), String> {
+    const RULE: &str = r#"SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess""#;
+    let script = format!(
+        "printf '%s\\n' '{RULE}' > /etc/udev/rules.d/70-voxly-keyboard.rules \
+         && udevadm control --reload \
+         && udevadm trigger --subsystem-match=input --action=change"
+    );
+    let status = std::process::Command::new("pkexec")
+        .args(["sh", "-c", &script])
+        .status()
+        .map_err(|e| format!("could not run pkexec: {e}"))?;
+    if !status.success() {
+        return Err("keyboard access was not granted".into());
+    }
+    // The ACL is applied asynchronously by udev.
+    for _ in 0..20 {
+        if has_access() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    Err("the rule was installed, but the keyboards are still not readable; log out and in again".into())
 }
 
 fn start_listeners(app: &AppHandle, state: Arc<Mutex<State>>) -> Result<(), String> {
