@@ -281,6 +281,8 @@ function render() {
   setHotkey($('hk-toggle'), settings.hotkeys.toggle);
   setHotkey($('hk-paste'), settings.hotkeys.paste_last);
   $('auto-paste').checked = settings.auto_paste;
+  $('use-gpu').checked = settings.use_gpu !== false;
+  $('overlay-position').value = settings.overlay_position || 'top';
   $('terms').replaceChildren();
   settings.vocabulary.forEach(termRow);
   if (!settings.vocabulary.length) termRow();
@@ -302,6 +304,8 @@ function collect() {
     vocabulary,
     hotkeys: { hold: $('hk-hold').dataset.value, toggle: $('hk-toggle').dataset.value, paste_last: $('hk-paste').dataset.value },
     auto_paste: $('auto-paste').checked,
+    use_gpu: $('use-gpu').checked,
+    overlay_position: $('overlay-position').value,
   };
 }
 

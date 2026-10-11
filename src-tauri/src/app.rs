@@ -33,6 +33,19 @@ enum Status {
 }
 
 fn set_status(app: &AppHandle, s: Status) {
+    // The Wayland overlay is a layer surface that exists only while active.
+    #[cfg(target_os = "linux")]
+    if is_wayland() {
+        if let Some(w) = app.get_webview_window("overlay") {
+            if matches!(s, Status::Idle) {
+                let _ = w.hide();
+            } else {
+                let _ = w.show();
+                // Needs a realized window, so it can only be set after show.
+                let _ = w.set_ignore_cursor_events(true);
+            }
+        }
+    }
     let _ = app.emit("status", s);
 }
 
@@ -135,8 +148,14 @@ fn toggle_recording(app: &AppHandle) {
 /// Puts the text on the clipboard and, if asked, types Cmd/Ctrl+V into the
 /// focused application.
 fn output(app: &AppHandle, text: &str, paste: bool) {
-    if let Err(e) = app.clipboard().write_text(text) {
-        return report(app, format!("clipboard: {e}"));
+    #[cfg(target_os = "linux")]
+    let wayland_ok = is_wayland() && wayland_copy(text).is_ok();
+    #[cfg(not(target_os = "linux"))]
+    let wayland_ok = false;
+    if !wayland_ok {
+        if let Err(e) = app.clipboard().write_text(text) {
+            return report(app, format!("clipboard: {e}"));
+        }
     }
     #[cfg(desktop)]
     if paste {
@@ -152,8 +171,90 @@ fn output(app: &AppHandle, text: &str, paste: bool) {
     let _ = paste;
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn is_wayland() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
+/// Wayland clipboards belong to the process that set them and the X11
+/// fallback only reaches XWayland apps, so hand the text to `wl-copy`, which
+/// forks into the background and keeps serving it.
+#[cfg(target_os = "linux")]
+fn wayland_copy(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("wl-copy")
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    child
+        .stdin
+        .take()
+        .ok_or("no stdin")?
+        .write_all(text.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let status = child.wait().map_err(|e| e.to_string())?;
+    status.success().then_some(()).ok_or_else(|| format!("wl-copy: {status}"))
+}
+
+/// Tries wtype (virtual-keyboard protocol, works on Hyprland/sway), then
+/// ydotool (needs ydotoold). Terminals paste with Ctrl+Shift+V, so that is
+/// sent when the focused window is a known terminal class.
+#[cfg(target_os = "linux")]
+fn wayland_paste() -> Result<(), String> {
+    use std::process::Command;
+    let shift = focused_is_terminal();
+    let mut wtype = Command::new("wtype");
+    wtype.args(["-M", "ctrl"]);
+    if shift {
+        wtype.args(["-M", "shift"]);
+    }
+    wtype.args(["-k", "v"]);
+    if shift {
+        wtype.args(["-m", "shift"]);
+    }
+    wtype.args(["-m", "ctrl"]);
+    match wtype.status() {
+        Ok(s) if s.success() => return Ok(()),
+        _ => {}
+    }
+    // ydotool uses raw keycodes: ctrl=29, shift=42, v=47
+    let seq: &[&str] = if shift {
+        &["key", "29:1", "42:1", "47:1", "47:0", "42:0", "29:0"]
+    } else {
+        &["key", "29:1", "47:1", "47:0", "29:0"]
+    };
+    match Command::new("ydotool").args(seq).status() {
+        Ok(s) if s.success() => Ok(()),
+        _ => Err("install wtype (or ydotool + ydotoold) to auto-paste on Wayland".into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn focused_is_terminal() -> bool {
+    let Ok(out) = std::process::Command::new("hyprctl")
+        .args(["activewindow", "-j"])
+        .output()
+    else {
+        return false;
+    };
+    let json = String::from_utf8_lossy(&out.stdout).to_lowercase();
+    const TERMS: &[&str] = &[
+        "kitty", "alacritty", "foot", "wezterm", "ghostty", "konsole", "gnome-terminal",
+        "xterm", "terminator", "tilix", "st-256color", "urxvt",
+    ];
+    json.lines()
+        .find(|l| l.contains("\"class\""))
+        .is_some_and(|l| TERMS.iter().any(|t| l.contains(t)))
+}
+
 #[cfg(desktop)]
 fn simulate_paste() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if is_wayland() {
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        return wayland_paste();
+    }
     use enigo::{Direction, Enigo, Key, Keyboard, Settings};
     let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
@@ -166,6 +267,30 @@ fn simulate_paste() -> Result<(), String> {
     let click = enigo.key(Key::Unicode('v'), Direction::Click);
     let release = enigo.key(modifier, Direction::Release);
     click.and(release).map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn hotkey_event(app: &AppHandle, action: crate::evdev_hotkeys::Action, pressed: bool) {
+    use crate::evdev_hotkeys::Action;
+    match (action, pressed) {
+        (Action::Hold, true) => start_recording(app),
+        (Action::Hold, false) => stop_recording(app),
+        (Action::Toggle, true) => toggle_recording(app),
+        (Action::PasteLast, true) => paste_last(app),
+        _ => {}
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn handle_command(app: &AppHandle, cmd: &str) {
+    match cmd {
+        "start" => start_recording(app),
+        "stop" => stop_recording(app),
+        "toggle" => toggle_recording(app),
+        "paste-last" => paste_last(app),
+        "show" => show_main(app),
+        _ => {}
+    }
 }
 
 fn paste_last(app: &AppHandle) {
@@ -240,14 +365,77 @@ fn show_main(app: &AppHandle) {
 /// and only fades in and out (see ui/overlay.html), so showing it never takes
 /// focus away from the app being dictated into.
 #[cfg(desktop)]
-fn create_overlay(app: &AppHandle) -> tauri::Result<()> {
-    use tauri::{LogicalPosition, WebviewUrl, WebviewWindowBuilder};
+const OVERLAY_W: f64 = 220.0;
+#[cfg(desktop)]
+const OVERLAY_H: f64 = 56.0;
+/// Distance from the screen edges, in logical pixels.
+#[cfg(desktop)]
+const EDGE_GAP: f64 = 44.0;
 
-    const W: f64 = 220.0;
-    const H: f64 = 56.0;
+/// Splits `top`, `bottom-left`, ... into (bottom?, horizontal) where
+/// horizontal is -1 (left), 0 (center) or 1 (right).
+#[cfg(desktop)]
+fn parse_overlay_position(pos: &str) -> (bool, i32) {
+    let h = if pos.ends_with("left") {
+        -1
+    } else if pos.ends_with("right") {
+        1
+    } else {
+        0
+    };
+    (pos.starts_with("bottom"), h)
+}
+
+/// Moves the overlay to the configured spot. Must run on the main thread.
+#[cfg(desktop)]
+fn apply_overlay_position(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("overlay") else {
+        return;
+    };
+    let pos = app.state::<AppState>().settings.lock().unwrap().overlay_position.clone();
+    let (bottom, horiz) = parse_overlay_position(&pos);
+
+    #[cfg(target_os = "linux")]
+    if is_wayland() {
+        use gtk_layer_shell::{Edge, LayerShell};
+        if let Ok(gw) = win.gtk_window() {
+            gw.set_anchor(Edge::Top, !bottom);
+            gw.set_anchor(Edge::Bottom, bottom);
+            gw.set_anchor(Edge::Left, horiz < 0);
+            gw.set_anchor(Edge::Right, horiz > 0);
+            gw.set_layer_shell_margin(Edge::Top, if bottom { 0 } else { EDGE_GAP as i32 });
+            gw.set_layer_shell_margin(Edge::Bottom, if bottom { EDGE_GAP as i32 } else { 0 });
+            gw.set_layer_shell_margin(Edge::Left, EDGE_GAP as i32);
+            gw.set_layer_shell_margin(Edge::Right, EDGE_GAP as i32);
+        }
+        return;
+    }
+
+    let Ok(Some(mon)) = win.primary_monitor() else {
+        return;
+    };
+    let scale = mon.scale_factor();
+    let (mx, my) = (mon.position().x as f64 / scale, mon.position().y as f64 / scale);
+    let (mw, mh) = (mon.size().width as f64 / scale, mon.size().height as f64 / scale);
+    let x = match horiz {
+        -1 => mx + EDGE_GAP,
+        1 => mx + mw - OVERLAY_W - EDGE_GAP,
+        _ => mx + (mw - OVERLAY_W) / 2.0,
+    };
+    let y = if bottom { my + mh - OVERLAY_H - EDGE_GAP } else { my + EDGE_GAP };
+    let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+}
+
+/// A transparent, click-through pill at the edge of the screen. It stays open
+/// and only fades in and out (see ui/overlay.html), so showing it never takes
+/// focus away from the app being dictated into.
+#[cfg(desktop)]
+fn create_overlay(app: &AppHandle) -> tauri::Result<()> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
     let win = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("overlay.html".into()))
         .title("Voxly overlay")
-        .inner_size(W, H)
+        .inner_size(OVERLAY_W, OVERLAY_H)
         .decorations(false)
         .transparent(true)
         .shadow(false)
@@ -257,22 +445,58 @@ fn create_overlay(app: &AppHandle) -> tauri::Result<()> {
         .focusable(false)
         .focused(false)
         .visible_on_all_workspaces(true)
+        .visible(false)
         .build()?;
+    #[cfg(target_os = "linux")]
+    if is_wayland() {
+        // Wayland ignores window positions and tiles/decorates normal windows,
+        // so the pill is a layer-shell surface instead. It is shown only while
+        // recording or transcribing (see set_status).
+        layer_overlay(&win, OVERLAY_W as i32, OVERLAY_H as i32)?;
+        apply_overlay_position(app);
+        return Ok(());
+    }
     win.set_ignore_cursor_events(true)?;
     raise_above_everything(&win);
     win.show()?;
-    if let Some(mon) = win.primary_monitor()? {
-        let scale = mon.scale_factor();
-        let x = mon.position().x as f64 / scale + (mon.size().width as f64 / scale - W) / 2.0;
-        let y = mon.position().y as f64 / scale + 44.0;
-        win.set_position(LogicalPosition::new(x, y))?;
-    }
+    apply_overlay_position(app);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn layer_overlay(win: &tauri::WebviewWindow, w: i32, h: i32) -> tauri::Result<()> {
+    use gtk::prelude::*;
+    use gtk_layer_shell::{Layer, LayerShell};
+
+    let gw = win.gtk_window()?;
+    gw.init_layer_shell();
+    gw.set_namespace("voxly-overlay");
+    gw.set_layer(Layer::Overlay);
+    gw.set_keyboard_interactivity(false);
+    gw.set_exclusive_zone(-1);
+    gw.set_size_request(w, h);
+    gw.set_decorated(false);
     Ok(())
 }
 
 #[cfg(desktop)]
 fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+    // X11 key grabs do not work on Wayland; read the keyboards directly.
+    #[cfg(target_os = "linux")]
+    if is_wayland() {
+        use crate::evdev_hotkeys::{configure, Action};
+        let hk = app.state::<AppState>().settings.lock().unwrap().hotkeys.clone();
+        return configure(
+            app,
+            [
+                (Action::Hold, &hk.hold),
+                (Action::Toggle, &hk.toggle),
+                (Action::PasteLast, &hk.paste_last),
+            ],
+        );
+    }
 
     let hk = app.state::<AppState>().settings.lock().unwrap().hotkeys.clone();
     let gs = app.global_shortcut();
@@ -301,6 +525,14 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
     })
 }
 
+/// Loads the local model in the background (see `local::preload`).
+fn preload_model(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let settings = state.settings.lock().unwrap().clone();
+    let dir = state.models_dir.clone();
+    std::thread::spawn(move || local::preload(&settings, &dir));
+}
+
 #[tauri::command]
 fn get_settings(state: State<AppState>) -> Settings {
     state.settings.lock().unwrap().clone()
@@ -310,8 +542,13 @@ fn get_settings(state: State<AppState>) -> Settings {
 fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<(), String> {
     settings.save(&state.settings_path).map_err(|e| e.to_string())?;
     *state.settings.lock().unwrap() = settings;
+    preload_model(&app);
     #[cfg(desktop)]
-    register_hotkeys(&app)?;
+    {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || apply_overlay_position(&handle));
+        register_hotkeys(&app)?;
+    }
     #[cfg(not(desktop))]
     let _ = app;
     Ok(())
@@ -412,6 +649,7 @@ pub fn run() {
                 last: Mutex::new(String::new()),
                 busy: Mutex::new(false),
             });
+            preload_model(app.handle());
             // A regular (Dock) app cannot show windows over full-screen Spaces,
             // whatever the window level. As a tray-only "accessory" app it can.
             #[cfg(target_os = "macos")]
@@ -424,6 +662,8 @@ pub fn run() {
             if let Err(e) = create_tray(app.handle()) {
                 eprintln!("could not create tray icon: {e}");
             }
+            #[cfg(unix)]
+            crate::ipc::spawn_server(app.handle());
             #[cfg(desktop)]
             if let Err(e) = register_hotkeys(app.handle()) {
                 eprintln!("could not register hotkeys: {e}");

@@ -39,10 +39,24 @@ cargo tauri ios init && cargo tauri ios dev
 cargo tauri android init && cargo tauri android dev
 ```
 
+## GPU acceleration
+
+Local transcription runs on the GPU by default (setting "Use the GPU when available"), and falls back to the CPU if none is usable.
+
+| Platform | Backend | Build |
+| --- | --- | --- |
+| macOS, Apple Silicon | Metal | automatic |
+| Windows / Linux, AMD + NVIDIA + Intel | Vulkan | `--features vulkan` (needs the Vulkan SDK: headers and `glslc`) |
+| Windows / Linux, NVIDIA only | CUDA | `--features cuda` (needs the CUDA toolkit) |
+| Linux, AMD only | ROCm/HIP | `AMDGPU_TARGETS=gfx1030 cargo tauri build --features hip` (your card's id: `rocminfo`) |
+
+The release installers for Windows and Linux are built with Vulkan, so they need a Vulkan driver, which ships with the normal AMD/NVIDIA/Intel GPU drivers.
+
 ## Platform notes
 
 - **macOS**: grant Microphone and Accessibility (needed to simulate Cmd+V) permission.
-- **Linux**: global hotkeys and simulated paste work on X11. Wayland restricts both; copy-from-clipboard still works.
+- **Linux (X11)**: global hotkeys and simulated paste work out of the box.
+- **Linux (Wayland, e.g. Hyprland)**: the in-app hotkeys work here too. Wayland has no global key grabs, so Voxly reads the keyboards from `/dev/input` instead (keys are observed, not grabbed, so they still reach the focused app). Your user must be in the `input` group: `sudo usermod -aG input $USER`, then log in again. Clipboard uses `wl-copy` and auto-paste uses `wtype` (or `ydotool`), so install `wl-clipboard` and `wtype`; terminals get Ctrl+Shift+V (detected via `hyprctl`). Optionally, `voxly start|stop|toggle|paste-last|show` controls the running app from compositor binds. Wayland compositors ignore window positions, so to keep the overlay pill from stealing focus on Hyprland add `windowrule = no_focus on, match:title ^Voxly overlay$`.
 - **iOS / Android**: no global hotkeys or system-wide paste from a regular app. You record in the app and the result goes to the clipboard. A system keyboard (IME) is the route to true system-wide dictation and is not built yet.
 
 ## License
