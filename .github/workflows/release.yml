@@ -22,13 +22,13 @@ jobs:
           - os: macos-15-intel
             args: --target x86_64-apple-darwin
             target: x86_64-apple-darwin
-          # macOS: Metal is enabled automatically on Apple Silicon.
-          # Linux and Windows: Vulkan runs on AMD, NVIDIA and Intel GPUs.
+          # GPU: Metal on Apple Silicon and Vulkan on Linux/Windows are enabled
+          # automatically (src-tauri/tauri.{linux,windows}.conf.json).
           - os: ubuntu-22.04
-            args: --features vulkan
+            args: ""
             target: ""
           - os: windows-latest
-            args: --features vulkan
+            args: ""
             target: ""
     runs-on: ${{ matrix.os }}
     permissions:

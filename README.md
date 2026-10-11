@@ -43,12 +43,14 @@ cargo tauri android init && cargo tauri android dev
 
 Local transcription runs on the GPU by default (setting "Use the GPU when available"), and falls back to the CPU if none is usable.
 
-| Platform | Backend | Build |
+The GPU backend is part of the normal build, so plain `cargo tauri dev` / `cargo tauri build` use it with no flags:
+
+| Platform | Backend | Build requirements |
 | --- | --- | --- |
-| macOS, Apple Silicon | Metal | automatic |
-| Windows / Linux, AMD + NVIDIA + Intel | Vulkan | `--features vulkan` (needs the Vulkan SDK: headers and `glslc`) |
-| Windows / Linux, NVIDIA only | CUDA | `--features cuda` (needs the CUDA toolkit) |
-| Linux, AMD only | ROCm/HIP | `AMDGPU_TARGETS=gfx1030 cargo tauri build --features hip` (your card's id: `rocminfo`) |
+| macOS, Apple Silicon | Metal | none |
+| Windows / Linux, AMD + NVIDIA + Intel | Vulkan | Vulkan SDK (headers and `glslc`); Arch: `vulkan-headers shaderc` |
+
+Optional vendor backends instead of Vulkan: `cuda` (NVIDIA, needs the CUDA toolkit) or `hip` (AMD, needs ROCm and `AMDGPU_TARGETS=gfx1030`, or your card's id from `rocminfo`). Swap `"vulkan"` for it in `src-tauri/tauri.<os>.conf.json`.
 
 The release installers for Windows and Linux are built with Vulkan, so they need a Vulkan driver, which ships with the normal AMD/NVIDIA/Intel GPU drivers.
 
