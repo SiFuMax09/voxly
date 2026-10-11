@@ -29,9 +29,7 @@ tauri-plugin-clipboard-manager = "2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "2"
-# "wayland" adds a pure-Rust virtual-keyboard backend, so pasting needs no
-# wtype/ydotool on Wayland compositors.
-enigo = { version = "0.5", features = ["wayland"] }
+enigo = "0.5"
 
 # Local transcription is desktop-only for now (whisper.cpp cross-compiles to
 # mobile, but that is not set up yet).
@@ -46,3 +44,4 @@ objc2 = "0.6"
 evdev = "0.13.2"
 gtk = "0.18"
 gtk-layer-shell = "0.8"
+wl-clipboard-rs = "0.9"

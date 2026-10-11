@@ -60,7 +60,7 @@ fn report(app: &AppHandle, err: impl std::fmt::Display) {
 /// Background task that transcribes finished parts of a running recording.
 struct StreamJob {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    handle: tauri::async_runtime::JoinHandle<Result<Vec<String>, String>>,
+    handle: tauri::async_runtime::JoinHandle<Result<StreamOutcome, String>>,
 }
 
 fn start_recording(app: &AppHandle) {
@@ -85,72 +85,129 @@ fn start_recording(app: &AppHandle) {
     }
 }
 
-/// What a transcribed chunk turns into when it is added to the dictation.
-enum Piece {
-    Text(String),
-    /// The user said "delete that".
-    Delete,
-    Empty,
-}
-
-/// Applies the voice commands to one chunk and adds the separating space.
-fn make_piece(settings: &Settings, raw: &str, first: bool) -> Piece {
-    let mut text = raw.trim().to_owned();
-    if settings.voice_commands {
-        let outcome = voxly_core::commands::apply(&text);
-        if outcome.delete_last {
-            return Piece::Delete;
-        }
-        text = outcome.text;
-    }
-    if text.is_empty() {
-        return Piece::Empty;
-    }
-    // Chunks are joined with a space, except after a line break or before
-    // spoken punctuation, which already attached itself.
-    let glue = !first && !text.starts_with(['\n', ',', '.', '!', '?', ':', ';']);
-    Piece::Text(if glue { format!(" {text}") } else { text })
-}
-
 /// Types one finished chunk into the focused app right away.
 fn insert_live(app: &AppHandle, piece: &str, paste: bool) {
     if !paste {
         return;
     }
-    if let Err(e) = app.clipboard().write_text(piece) {
-        #[cfg(target_os = "linux")]
-        let fallback = is_wayland() && wayland_copy(piece).is_ok();
-        #[cfg(not(target_os = "linux"))]
-        let fallback = false;
-        if !fallback {
-            return report(app, format!("clipboard: {e}"));
-        }
+    if let Err(e) = set_clipboard(app, piece) {
+        return report(app, format!("clipboard: {e}"));
     }
     *app.state::<AppState>().inserted.lock().unwrap() += piece.chars().count();
+    // Wait until the paste is done: the clipboard is overwritten again by the
+    // next chunk (and by the whole text at the end), so a paste that is still
+    // queued would insert the wrong text.
+    let (done, wait) = std::sync::mpsc::channel();
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Err(e) = simulate_paste() {
             report(&handle, format!("paste failed: {e}"));
         }
+        let _ = done.send(());
     });
+    let _ = wait.recv_timeout(std::time::Duration::from_secs(3));
+    // The focused app reads the clipboard a moment after Ctrl+V; do not replace
+    // it before it had the chance.
+    std::thread::sleep(std::time::Duration::from_millis(150));
 }
 
-/// Every quarter second, looks for a pause (or, in fluent speech, a quiet
-/// moment) in what has been recorded so far, transcribes the speech before it
-/// and types it into the focused app immediately. Returns the inserted pieces.
+/// Lower-case letters and digits only, to compare words across two passes.
+fn norm(word: &str) -> String {
+    word.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// Starts of multi-word voice commands. They are held back until the next
+/// word shows whether a command follows.
+const HOLD_BACK: &[&str] = &[
+    "neue", "neuer", "new", "alles", "delete", "scratch", "clear", "lösche", "lösch", "undo",
+    "question", "exclamation", "full",
+];
+
+/// What the streaming task has typed into the focused app so far.
+struct StreamOutcome {
+    typed: String,
+    /// The (normalized) words of the current, unfinished segment that are
+    /// already typed. New words are found by matching the end of this list
+    /// against the next transcription, because Whisper may change or add a
+    /// word earlier in the sentence and shift every position.
+    typed_words: Vec<String>,
+    /// Text of the segments before the current one, as context for Whisper.
+    before: String,
+}
+
+/// Index in `current` right after the words that are already typed: the end
+/// of `typed` is looked up in `current[..upto]`, preferring the latest and
+/// longest match.
+fn resume_index(typed: &[String], current: &[String], upto: usize) -> usize {
+    if typed.is_empty() {
+        return 0;
+    }
+    for k in (1..=typed.len().min(3)).rev() {
+        let tail = &typed[typed.len() - k..];
+        if upto >= k {
+            if let Some(i) = (0..=upto - k).rev().find(|&i| current[i..i + k] == *tail) {
+                return i + k;
+            }
+        }
+    }
+    // Could not align: assume nothing before the typed count has moved.
+    typed.len().min(upto)
+}
+
+/// Types `words` into the focused app, with the voice commands applied.
+fn type_words(app: &AppHandle, settings: &Settings, words: &[&str], typed: &mut String, finished: bool) {
+    if words.is_empty() {
+        return;
+    }
+    let raw = words.join(" ");
+    let mut text = if settings.voice_commands {
+        voxly_core::commands::apply_with(&raw, finished).text
+    } else {
+        raw
+    };
+    if text.is_empty() {
+        return;
+    }
+    // Words are joined with a space, except after a line break or before
+    // spoken punctuation, which already attached itself.
+    let glue = !typed.is_empty()
+        && !typed.ends_with('\n')
+        && !text.starts_with(['\n', ',', '.', '!', '?', ':', ';']);
+    if glue {
+        text.insert(0, ' ');
+    }
+    eprintln!("stream: typing {text:?}");
+    insert_live(app, &text, settings.auto_paste);
+    typed.push_str(&text);
+    let _ = app.emit("transcript", typed.as_str());
+}
+
+/// The last 200 characters of `text`.
+fn context_of(text: &str) -> String {
+    let skip = text.chars().count().saturating_sub(200);
+    text.chars().skip(skip).collect()
+}
+
+/// Types the dictation word by word while the user is still speaking.
+///
+/// The audio of the current segment is transcribed again and again (about
+/// every half second on a GPU). A word is typed as soon as two passes in a
+/// row agree on it, because the end of a growing recording is still unstable.
+/// Long segments are closed at a pause so that the passes stay short.
 async fn stream_worker(
     app: AppHandle,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> Result<Vec<String>, String> {
+) -> Result<StreamOutcome, String> {
     use std::sync::atomic::Ordering;
     use voxly_core::audio::{find_pause_cut, samples_to_wav, trim_silence};
 
-    let mut pieces: Vec<String> = Vec::new();
-    let mut context = String::new();
-    let mut cut = 0usize;
+    let mut out = StreamOutcome { typed: String::new(), typed_words: Vec::new(), before: String::new() };
+    let mut seg_start = 0usize;
+    let mut previous: Vec<String> = Vec::new();
+    let mut last_len = 0usize;
     while !stop.load(Ordering::SeqCst) {
         let _ = tauri::async_runtime::spawn_blocking(|| {
-            std::thread::sleep(std::time::Duration::from_millis(250))
+            std::thread::sleep(std::time::Duration::from_millis(100))
         })
         .await;
         if stop.load(Ordering::SeqCst) {
@@ -158,38 +215,64 @@ async fn stream_worker(
         }
         let state = app.state::<AppState>();
         let Some((len, rate)) = state.recorder.progress() else { break };
-        let Some(region) = state.recorder.copy_range(cut, len) else { break };
-        let Some(rel) = find_pause_cut(&region, rate) else { continue };
-        let Ok(wav) = samples_to_wav(&region[..rel], rate) else { continue };
-        cut += rel;
-        state.recorder.mark_processed(cut);
-        // A chunk of pure silence would only produce invented text.
+        // Wait for 300 ms of new audio before spending another pass on it.
+        if len < last_len + rate as usize * 3 / 10 {
+            continue;
+        }
+        let Some(region) = state.recorder.copy_range(seg_start, len) else { break };
+        last_len = len;
+
+        // Close a long segment at a pause; the words of this last pass are final.
+        let cut = if region.len() >= rate as usize * 8 { find_pause_cut(&region, rate) } else { None };
+        let audio = &region[..cut.unwrap_or(region.len())];
+        let Ok(wav) = samples_to_wav(audio, rate) else { continue };
         let wav = match trim_silence(&wav) {
             Ok(Some(w)) => w,
-            Ok(None) => continue,
+            Ok(None) => {
+                // Only silence so far; do not let it pile up.
+                if region.len() >= rate as usize * 3 {
+                    seg_start += region.len();
+                    state.recorder.mark_processed(seg_start);
+                    previous.clear();
+                    out.typed_words.clear();
+                }
+                continue;
+            }
             Err(_) => wav,
         };
+
         let settings = state.settings.lock().unwrap().clone();
-        let raw = voxly_core::transcribe::transcribe_chunk(&settings, wav, &state.models_dir, &context)
+        let raw = voxly_core::transcribe::transcribe_chunk(&settings, wav, &state.models_dir, &context_of(&out.before))
             .await
             .map_err(|e| format!("{e:#}"))?;
-        match make_piece(&settings, &raw, pieces.is_empty()) {
-            Piece::Text(piece) => {
-                context = raw;
-                insert_live(&app, &piece, settings.auto_paste);
-                pieces.push(piece);
-                let _ = app.emit("transcript", pieces.concat());
-            }
-            Piece::Delete => {
-                pieces.clear();
-                context.clear();
-                delete_inserted(&app);
-                let _ = app.emit("transcript", "");
-            }
-            Piece::Empty => {}
+        let current: Vec<&str> = raw.split_whitespace().collect();
+        let normalized: Vec<String> = current.iter().map(|w| norm(w)).collect();
+        let finalize = cut.is_some();
+
+        let mut upto = if finalize {
+            current.len()
+        } else {
+            previous.iter().zip(&normalized).take_while(|(a, b)| a == b).count()
+        };
+        let from = resume_index(&out.typed_words, &normalized, upto);
+        if !finalize && upto > from && HOLD_BACK.contains(&normalized[upto - 1].as_str()) {
+            upto -= 1;
+        }
+        if upto > from {
+            type_words(&app, &settings, &current[from..upto], &mut out.typed, false);
+            out.typed_words.extend(normalized[from..upto].iter().cloned());
+        }
+        previous = normalized;
+
+        if let Some(rel) = cut {
+            seg_start += rel;
+            state.recorder.mark_processed(seg_start);
+            out.before = out.typed.clone();
+            out.typed_words.clear();
+            previous.clear();
         }
     }
-    Ok(pieces)
+    Ok(out)
 }
 
 /// How long to keep recording after the key is released, so the last word of
@@ -225,7 +308,7 @@ fn stop_recording(app: &AppHandle) {
                 j.stop.store(true, std::sync::atomic::Ordering::SeqCst);
                 j.handle.await.map_err(|e| e.to_string()).and_then(|r| r)
             }
-            None => Ok(Vec::new()),
+            None => Ok(StreamOutcome { typed: String::new(), typed_words: Vec::new(), before: String::new() }),
         };
         let total_seconds = state.recorder.progress().map(|(n, r)| n as u64 / r.max(1) as u64);
         let wav = state.recorder.stop();
@@ -247,34 +330,39 @@ fn stop_recording(app: &AppHandle) {
         };
 
         let result: anyhow::Result<String> = if streamed {
-            // Only the audio after the last chunk is left.
+            // Only the audio of the unfinished segment is left; its words that
+            // are not typed yet come now.
+            let mut out = chunks;
             let tail = match voxly_core::audio::trim_silence(&wav) {
                 Ok(Some(w)) => Some(w),
                 Ok(None) => None,
                 Err(_) => Some(wav),
             };
-            let mut pieces = chunks;
             let mut failure = None;
             if let Some(w) = tail {
-                let context = pieces.last().cloned().unwrap_or_default();
+                let context = context_of(&out.before);
                 match voxly_core::transcribe::transcribe_chunk(&settings, w, &state.models_dir, &context).await {
-                    Ok(raw) => match make_piece(&settings, &raw, pieces.is_empty()) {
-                        Piece::Text(piece) => {
-                            insert_live(&app, &piece, settings.auto_paste);
-                            pieces.push(piece);
+                    Ok(raw) => {
+                        let words: Vec<&str> = raw.split_whitespace().collect();
+                        let normalized: Vec<String> = words.iter().map(|w| norm(w)).collect();
+                        let from = resume_index(&out.typed_words, &normalized, words.len());
+                        if words.len() > from {
+                            type_words(&app, &settings, &words[from..], &mut out.typed, true);
                         }
-                        Piece::Delete => {
-                            pieces.clear();
-                            delete_inserted(&app);
-                        }
-                        Piece::Empty => {}
-                    },
+                    }
                     Err(e) => failure = Some(e),
                 }
             }
             match failure {
                 Some(e) => Err(e),
-                None => Ok(pieces.concat()),
+                None if out.typed.trim().is_empty() => Err(anyhow::anyhow!("No speech detected.")),
+                None if settings.voice_commands && voxly_core::commands::apply(&out.typed).delete_last => {
+                    // The whole dictation was "delete that": it is typed
+                    // already, so remove it again.
+                    delete_inserted(&app);
+                    Err(anyhow::anyhow!("Deleted the last dictation."))
+                }
+                None => Ok(out.typed),
             }
         } else {
             let trimmed = if settings.trim_silence {
@@ -431,19 +519,47 @@ fn toggle_recording(app: &AppHandle) {
     }
 }
 
+/// Puts `text` on the clipboard. On Wayland the clipboard plugin only reaches
+/// X11 apps, so the text is offered through the Wayland data-control protocol
+/// instead, and `wl-copy` is the last fallback.
+fn set_clipboard(app: &AppHandle, text: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if is_wayland() {
+        if wayland_clipboard(text).is_ok() {
+            return Ok(());
+        }
+        if wayland_copy(text).is_ok() {
+            return Ok(());
+        }
+    }
+    app.clipboard().write_text(text).map_err(|e| e.to_string())
+}
+
+/// Serves `text` as the Wayland selection from a background thread. The
+/// thread ends when something else is copied. An immediate error means the
+/// compositor does not offer the data-control protocol.
+#[cfg(target_os = "linux")]
+fn wayland_clipboard(text: &str) -> Result<(), String> {
+    use wl_clipboard_rs::copy::{MimeType, Options, Source};
+    let data: Box<[u8]> = text.as_bytes().into();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut options = Options::new();
+        options.foreground(true);
+        let _ = tx.send(options.copy(Source::Bytes(data), MimeType::Text));
+    });
+    match rx.recv_timeout(std::time::Duration::from_millis(120)) {
+        Ok(Err(e)) => Err(e.to_string()),
+        // Still serving the selection (or finished): it works.
+        _ => Ok(()),
+    }
+}
+
 /// Puts the text on the clipboard and, if asked, types Cmd/Ctrl+V into the
 /// focused application.
 fn output(app: &AppHandle, text: &str, paste: bool) {
-    if let Err(e) = app.clipboard().write_text(text) {
-        // Some Wayland compositors lack the data-control protocol the
-        // clipboard plugin needs; wl-copy is only a fallback when installed.
-        #[cfg(target_os = "linux")]
-        let fallback = is_wayland() && wayland_copy(text).is_ok();
-        #[cfg(not(target_os = "linux"))]
-        let fallback = false;
-        if !fallback {
-            return report(app, format!("clipboard: {e}"));
-        }
+    if let Err(e) = set_clipboard(app, text) {
+        return report(app, format!("clipboard: {e}"));
     }
     #[cfg(desktop)]
     if paste {
@@ -471,6 +587,10 @@ fn delete_inserted(app: &AppHandle) {
         let handle = app.clone();
         let _ = app.run_on_main_thread(move || {
             use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+            #[cfg(target_os = "linux")]
+            if crate::vkeys::tap(&[], evdev::KeyCode::KEY_BACKSPACE, count.min(5000)).is_ok() {
+                return;
+            }
             let result = Enigo::new(&Settings::default())
                 .map_err(|e| e.to_string())
                 .and_then(|mut e| {
@@ -576,6 +696,19 @@ fn simulate_paste() -> Result<(), String> {
 
     // Give the user a moment to release the hotkey modifiers.
     std::thread::sleep(std::time::Duration::from_millis(80));
+    // A uinput keyboard works on X11 and on every Wayland compositor.
+    #[cfg(target_os = "linux")]
+    {
+        use evdev::KeyCode;
+        let mods: &[KeyCode] = if shift {
+            &[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_LEFTSHIFT]
+        } else {
+            &[KeyCode::KEY_LEFTCTRL]
+        };
+        if crate::vkeys::tap(mods, KeyCode::KEY_V, 1).is_ok() {
+            return Ok(());
+        }
+    }
     let result = (|| {
         let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
         enigo.key(modifier, Direction::Press).map_err(|e| e.to_string())?;
@@ -1085,6 +1218,8 @@ pub fn run() {
             }
             #[cfg(unix)]
             crate::ipc::spawn_server(app.handle());
+            #[cfg(target_os = "linux")]
+            std::thread::spawn(crate::vkeys::init);
             #[cfg(desktop)]
             if let Err(e) = register_hotkeys(app.handle()) {
                 eprintln!("could not register hotkeys: {e}");
@@ -1127,4 +1262,33 @@ pub fn run() {
                 show_main(_app);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resume_index;
+
+    fn v(s: &str) -> Vec<String> {
+        s.split_whitespace().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn continues_after_the_typed_words() {
+        let cur = v("das ist ein test mit mehr worten");
+        assert_eq!(resume_index(&v("das ist ein"), &cur, cur.len()), 3);
+        assert_eq!(resume_index(&[], &cur, cur.len()), 0);
+    }
+
+    #[test]
+    fn survives_a_word_inserted_before_the_typed_end() {
+        // "jetzt" was typed, then Whisper added "bereits" before it.
+        let cur = v("du dir bereits jetzt so ein bisschen");
+        assert_eq!(resume_index(&v("du dir jetzt"), &cur, cur.len()), 4);
+    }
+
+    #[test]
+    fn falls_back_to_the_count_when_nothing_matches() {
+        let cur = v("ganz anderer text jetzt");
+        assert_eq!(resume_index(&v("gar nicht"), &cur, 4), 2);
+    }
 }

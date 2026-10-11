@@ -151,6 +151,13 @@ fn usable_name(name: &str) -> bool {
 /// entries that capture playback.
 #[cfg(target_os = "linux")]
 fn pulse_sources() -> Vec<InputDevice> {
+    all_pulse_sources().into_iter().filter(|s| !s.id.ends_with(".monitor")).collect()
+}
+
+/// Every PipeWire/PulseAudio source, monitors included (they stay selectable
+/// by id, for example to record what is being played).
+#[cfg(target_os = "linux")]
+fn all_pulse_sources() -> Vec<InputDevice> {
     let Ok(out) = std::process::Command::new("pactl")
         .args(["list", "sources"])
         .env("LC_ALL", "C")
@@ -164,9 +171,7 @@ fn pulse_sources() -> Vec<InputDevice> {
         if let Some(n) = line.strip_prefix("Name: ") {
             name = Some(n.to_owned());
         } else if let (Some(d), Some(n)) = (line.strip_prefix("Description: "), name.take()) {
-            if !n.ends_with(".monitor") {
-                list.push(InputDevice { id: n, label: d.to_owned() });
-            }
+            list.push(InputDevice { id: n, label: d.to_owned() });
         }
     }
     list
@@ -185,7 +190,7 @@ fn open_stream(samples: Arc<Mutex<Vec<f32>>>, name: &str) -> Result<(cpal::Strea
     let pulse = if name.is_empty() {
         std::env::remove_var("PULSE_SOURCE");
         None
-    } else if pulse_sources().iter().any(|s| s.id == name) {
+    } else if all_pulse_sources().iter().any(|s| s.id == name) {
         std::env::set_var("PULSE_SOURCE", name);
         Some(find("pulse").or_else(|| find("pipewire")).ok_or_else(|| {
             anyhow!("this system cannot select PipeWire/PulseAudio microphones (ALSA pulse plugin missing); choose System default")

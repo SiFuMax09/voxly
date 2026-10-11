@@ -39,7 +39,14 @@ fn words(text: &str) -> String {
 }
 
 pub fn apply(text: &str) -> Outcome {
-    if DELETE_PHRASES.contains(&words(text).as_str()) {
+    apply_with(text, true)
+}
+
+/// `finished` is false for a piece of a dictation that is still going on:
+/// whether "Punkt" ends the dictation and whether the whole thing is a delete
+/// command can only be decided once it is over.
+pub fn apply_with(text: &str, finished: bool) -> Outcome {
+    if finished && DELETE_PHRASES.contains(&words(text).as_str()) {
         return Outcome { text: String::new(), delete_last: true };
     }
 
@@ -61,7 +68,8 @@ pub fn apply(text: &str) -> Outcome {
     // "Punkt" is also an everyday noun, so it only counts at the very end
     // and when the word before it does not make it a noun.
     let end = re(r"(\S+)?\s*\b(?:punkt|period|full stop)\b[.,!?]*$");
-    out = end
+    if finished {
+        out = end
         .replace(&out, |c: &Captures| match c.get(1) {
             Some(prev) if NOUN_CONTEXT.contains(&prev.as_str().to_lowercase().trim_matches(|ch: char| !ch.is_alphanumeric())) => {
                 c[0].to_owned()
@@ -70,6 +78,7 @@ pub fn apply(text: &str) -> Outcome {
             None => ".".to_owned(),
         })
         .into_owned();
+    }
 
     // Capitalise after a sentence end or a line break.
     out = re(r"([.!?]\s+|\n)(\p{Ll})")

@@ -1,6 +1,8 @@
 mod app;
 #[cfg(target_os = "linux")]
 mod evdev_hotkeys;
+#[cfg(target_os = "linux")]
+mod vkeys;
 #[cfg(unix)]
 mod ipc;
 

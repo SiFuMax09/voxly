@@ -161,9 +161,11 @@ pub fn has_access() -> bool {
 /// group or logging out again: a udev rule tags keyboards with `uaccess`.
 /// Runs through polkit, so the user sees the normal admin password dialog.
 pub fn grant_access() -> Result<(), String> {
+    // Keyboards (for the hotkeys) and /dev/uinput (to paste text).
     const RULE: &str = r#"SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess""#;
+    const RULE_UINPUT: &str = r#"KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput""#;
     let script = format!(
-        "printf '%s\\n' '{RULE}' > /etc/udev/rules.d/70-voxly-keyboard.rules \
+        "printf '%s\\n' '{RULE}' '{RULE_UINPUT}' > /etc/udev/rules.d/70-voxly-keyboard.rules \
          && udevadm control --reload \
          && udevadm trigger --subsystem-match=input --action=change"
     );
