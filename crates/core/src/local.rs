@@ -112,6 +112,8 @@ pub const GPU_BUILD: bool = cfg!(any(
     feature = "hip",
     feature = "vulkan",
     feature = "cuda",
+    target_os = "linux",
+    target_os = "windows",
     all(target_os = "macos", target_arch = "aarch64")
 ));
 

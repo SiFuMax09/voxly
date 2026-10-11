@@ -23,10 +23,16 @@ local = ["dep:whisper-rs"]
 #   vulkan  AMD, NVIDIA and Intel; needs the Vulkan SDK at build time
 #   cuda    NVIDIA only; needs the CUDA toolkit
 #   hip     AMD only; needs ROCm and AMDGPU_TARGETS (e.g. gfx1030, see `rocminfo`)
-vulkan = ["local", "whisper-rs/vulkan"]
+vulkan = ["local", "whisper-rs/vulkan"]  # always on for Linux/Windows, see below
 cuda = ["local", "whisper-rs/cuda"]
 hip = ["local", "whisper-rs/hipblas"]
 
 # Apple Silicon: Metal is part of the default build, no feature needed.
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 whisper-rs = { version = "0.16", features = ["metal"], optional = true }
+
+# Linux and Windows always get the Vulkan GPU backend (AMD, NVIDIA, Intel), no
+# matter how the app is started: Tauri builds with --no-default-features, so a
+# default feature or a plain `cargo run` would silently produce a CPU-only app.
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+whisper-rs = { version = "0.16", features = ["vulkan"], optional = true }
