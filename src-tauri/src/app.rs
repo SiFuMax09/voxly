@@ -98,7 +98,11 @@ fn stop_recording(app: &AppHandle) {
         let settings = state.settings.lock().unwrap().clone();
         let seconds = usage::wav_seconds(&wav);
         let started = std::time::Instant::now();
-        let result = transcribe(&settings, wav, &state.models_dir).await;
+        let result = if settings.compare_mode {
+            compare(&app, &settings, wav, seconds).await
+        } else {
+            transcribe(&settings, wav, &state.models_dir).await
+        };
         let elapsed = started.elapsed();
         *state.busy.lock().unwrap() = false;
         match result {
@@ -124,6 +128,68 @@ fn stop_recording(app: &AppHandle) {
             Err(e) => report(&app, format!("{e:#}")),
         }
     });
+}
+
+struct Side {
+    text: Result<String, String>,
+    ms: u64,
+}
+
+async fn timed(settings: Settings, wav: Vec<u8>, dir: PathBuf) -> Side {
+    let started = std::time::Instant::now();
+    let text = transcribe(&settings, wav, &dir).await.map_err(|e| format!("{e:#}"));
+    Side { text, ms: started.elapsed().as_millis() as u64 }
+}
+
+/// Compare mode: runs the local model and the cloud API on the same audio at
+/// the same time and reports both to the UI. The configured backend's result
+/// is the one that gets pasted; the other side failing only shows up in the
+/// comparison.
+async fn compare(
+    app: &AppHandle,
+    settings: &Settings,
+    wav: Vec<u8>,
+    seconds: u64,
+) -> anyhow::Result<String> {
+    let dir = app.state::<AppState>().models_dir.clone();
+    let side = |backend: &str| {
+        let mut s = settings.clone();
+        s.backend = backend.into();
+        tauri::async_runtime::spawn(timed(s, wav.clone(), dir.clone()))
+    };
+    let (local, cloud) = (side("local"), side("openai"));
+    let join = |r: Result<Side, tauri::Error>| {
+        r.unwrap_or_else(|e| Side { text: Err(e.to_string()), ms: 0 })
+    };
+    let (local, cloud) = (join(local.await), join(cloud.await));
+
+    let similarity = match (&local.text, &cloud.text) {
+        (Ok(a), Ok(b)) => Some(local::similarity(a, b)),
+        _ => None,
+    };
+    let gpu = if settings.use_gpu && local::GPU_BUILD { "GPU" } else { "CPU" };
+    let view = |s: &Side, label: String| {
+        serde_json::json!({
+            "label": label,
+            "ms": s.ms,
+            "text": s.text.as_ref().ok(),
+            "error": s.text.as_ref().err(),
+        })
+    };
+    let payload = serde_json::json!({
+        "audio_s": seconds,
+        "similarity": similarity,
+        "local": view(&local, format!("Local · {} · {gpu}", settings.local_model)),
+        "cloud": view(&cloud, format!("Cloud · {}", settings.model)),
+    });
+    eprintln!(
+        "compare: local {} ms, cloud {} ms, similarity {:?}",
+        local.ms, cloud.ms, similarity
+    );
+    let _ = app.emit("compare", payload);
+
+    let primary = if settings.backend == "local" { local } else { cloud };
+    primary.text.map_err(|e| anyhow::anyhow!(e))
 }
 
 fn record_usage(app: &AppHandle, text: &str, seconds: u64) {

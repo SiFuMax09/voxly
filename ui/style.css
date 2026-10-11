@@ -81,3 +81,14 @@ nav#tabs button[aria-selected="true"] { background: var(--accent); color: #fff; 
 .entry-meta button.del { color: var(--muted); }
 .entry-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 #history-clear { margin-top: 10px; }
+
+.cmp-card { margin-bottom: 12px; }
+.cmp-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.cmp-side { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+.cmp-side.fastest { border-color: var(--accent); }
+.cmp-head { font-size: 12px; color: var(--muted); }
+.cmp-time { font-size: 20px; font-weight: 600; margin: 2px 0 6px; }
+.cmp-side.fastest .cmp-time { color: var(--accent); }
+.cmp-text { font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.error-text { color: var(--danger); }
+@media (max-width: 480px) { .cmp-row { grid-template-columns: 1fr; } }

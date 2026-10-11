@@ -250,7 +250,7 @@ fn words(t: &str) -> Vec<String> {
 }
 
 /// 1.0 for identical word sequences, lower the more words differ.
-fn similarity(a: &str, b: &str) -> f32 {
+pub fn similarity(a: &str, b: &str) -> f32 {
     let (a, b) = (words(a), words(b));
     let n = a.len().max(b.len());
     if n == 0 {

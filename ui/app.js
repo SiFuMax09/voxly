@@ -182,6 +182,40 @@ function termRow(t = { term: '', sounds_like: [] }) {
 }
 $('add-term').onclick = () => termRow();
 
+// ---- compare mode -------------------------------------------------------
+function cmpSide(d, fastest) {
+  const box = document.createElement('div');
+  box.className = 'cmp-side' + (fastest ? ' fastest' : '');
+  const h = document.createElement('div');
+  h.className = 'cmp-head';
+  h.textContent = d.label;
+  const t = document.createElement('div');
+  t.className = 'cmp-time';
+  t.textContent = d.error ? 'failed' : `${(d.ms / 1000).toFixed(2)} s`;
+  const body = document.createElement('div');
+  body.className = d.error ? 'cmp-text error-text' : 'cmp-text';
+  body.textContent = d.error || d.text || '(empty)';
+  box.append(h, t, body);
+  return box;
+}
+listen('compare', (e) => {
+  const { audio_s, similarity, local, cloud } = e.payload;
+  $('cmp-section').hidden = false;
+  const card = document.createElement('div');
+  card.className = 'cmp-card';
+  const ok = !local.error && !cloud.error;
+  const row = document.createElement('div');
+  row.className = 'cmp-row';
+  row.append(cmpSide(local, ok && local.ms <= cloud.ms), cmpSide(cloud, ok && cloud.ms < local.ms));
+  const foot = document.createElement('p');
+  foot.className = 'hint';
+  foot.textContent = `${audio_s} s of audio` +
+    (similarity != null ? ` · texts match ${Math.round(similarity * 100)}%` : '');
+  card.append(row, foot);
+  $('cmp-list').prepend(card);
+  while ($('cmp-list').children.length > 10) $('cmp-list').lastChild.remove();
+});
+
 // ---- microphone ---------------------------------------------------------
 async function loadMics() {
   let devices = [];
@@ -330,6 +364,7 @@ function render() {
   setHotkey($('hk-toggle'), settings.hotkeys.toggle);
   setHotkey($('hk-paste'), settings.hotkeys.paste_last);
   $('auto-paste').checked = settings.auto_paste;
+  $('compare-mode').checked = !!settings.compare_mode;
   $('mic').value = settings.input_device || '';
   $('use-gpu').checked = settings.use_gpu !== false;
   $('overlay-position').value = settings.overlay_position || 'top';
@@ -354,6 +389,7 @@ function collect() {
     vocabulary,
     hotkeys: { hold: $('hk-hold').dataset.value, toggle: $('hk-toggle').dataset.value, paste_last: $('hk-paste').dataset.value },
     auto_paste: $('auto-paste').checked,
+    compare_mode: $('compare-mode').checked,
     input_device: $('mic').value,
     use_gpu: $('use-gpu').checked,
     overlay_position: $('overlay-position').value,

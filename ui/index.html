@@ -25,6 +25,11 @@
       <p id="error" hidden></p>
     </section>
 
+    <section id="cmp-section" hidden>
+      <h2>Compare: local vs cloud</h2>
+      <div id="cmp-list"></div>
+    </section>
+
     <section>
       <h2>Last transcript</h2>
       <textarea id="last" readonly placeholder="Your dictation shows up here"></textarea>
@@ -62,6 +67,8 @@
         <button id="download" class="secondary" type="button" hidden>Download model</button>
         <p id="dl-status" class="hint" hidden></p>
       </div>
+      <label class="check"><input type="checkbox" id="compare-mode"> Compare mode: transcribe with local and cloud at once</label>
+      <p class="hint">Needs a downloaded local model and an API key. Every recording is also sent to OpenAI. The result of the backend selected above is pasted; both show up under Home.</p>
       <label>Microphone <select id="mic"></select></label>
       <label>Output language
         <select id="language">
