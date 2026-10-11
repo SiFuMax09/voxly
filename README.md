@@ -57,4 +57,4 @@ Installers for macOS (Apple Silicon and Intel), Windows and Linux are built by G
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-The macOS and Windows builds are not code-signed yet, so the OS will warn on first launch.
+macOS builds are signed and notarized when these repository secrets are set: `APPLE_CERTIFICATE` (base64 of the Developer ID Application `.p12`), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` (app-specific password) and `APPLE_TEAM_ID`. Without them the macOS build is unsigned. Windows builds are not signed yet.
