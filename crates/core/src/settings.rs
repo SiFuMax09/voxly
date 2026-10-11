@@ -40,9 +40,15 @@ pub struct Settings {
     /// ISO-639-1 code such as `en` or `de`; empty means auto-detect.
     pub language: String,
     pub vocabulary: Vec<Term>,
+    /// Run local transcription on the GPU when the build supports it
+    /// (Metal, Vulkan, CUDA or HIP). Falls back to the CPU otherwise.
+    pub use_gpu: bool,
     pub hotkeys: Hotkeys,
     /// Paste into the focused app after transcribing (desktop only).
     pub auto_paste: bool,
+    /// Where the recording pill appears: `top`, `bottom`, or a corner such as
+    /// `top-left` / `bottom-right` (desktop only).
+    pub overlay_position: String,
 }
 
 impl Default for Settings {
@@ -54,8 +60,10 @@ impl Default for Settings {
             model: "whisper-1".into(),
             language: String::new(),
             vocabulary: Vec::new(),
+            use_gpu: true,
             hotkeys: Hotkeys::default(),
             auto_paste: true,
+            overlay_position: "top".into(),
         }
     }
 }

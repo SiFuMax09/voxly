@@ -107,32 +107,75 @@ pub async fn transcribe(settings: &Settings, wav: Vec<u8>, models_dir: &Path) ->
         .map_err(|e| anyhow!("transcription thread died: {e}"))?
 }
 
+/// True when this build has a GPU backend compiled in.
+#[cfg(feature = "local")]
+const GPU_BUILD: bool = cfg!(any(
+    feature = "hip",
+    feature = "vulkan",
+    feature = "cuda",
+    all(target_os = "macos", target_arch = "aarch64")
+));
+
+/// Loading a model takes seconds (more with a GPU), so keep the last one.
+#[cfg(feature = "local")]
+fn context(model: &Path, use_gpu: bool) -> Result<std::sync::Arc<whisper_rs::WhisperContext>> {
+    use std::sync::{Arc, Mutex, OnceLock};
+    use whisper_rs::{WhisperContext, WhisperContextParameters};
+
+    static CACHE: OnceLock<Mutex<Option<(PathBuf, bool, Arc<WhisperContext>)>>> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
+    if let Some((p, gpu, c)) = &*cache {
+        if p == model && *gpu == use_gpu {
+            return Ok(c.clone());
+        }
+    }
+    let mut params = WhisperContextParameters::default();
+    params.use_gpu(use_gpu);
+    let c = Arc::new(
+        WhisperContext::new_with_params(
+            model.to_str().ok_or_else(|| anyhow!("non-UTF-8 model path"))?,
+            params,
+        )
+        .map_err(|e| anyhow!("could not load model: {e}"))?,
+    );
+    *cache = Some((model.to_path_buf(), use_gpu, c.clone()));
+    Ok(c)
+}
+
+/// Loads the configured local model ahead of the first recording so that
+/// dictation does not wait for it. Blocking; call from a background thread.
+pub fn preload(settings: &Settings, models_dir: &Path) {
+    #[cfg(feature = "local")]
+    if settings.backend == "local" {
+        if let Ok(path) = model_path(models_dir, &settings.local_model) {
+            if path.exists() {
+                if let Err(e) = context(&path, settings.use_gpu) {
+                    eprintln!("could not preload model: {e:#}");
+                }
+            }
+        }
+    }
+    #[cfg(not(feature = "local"))]
+    let _ = (settings, models_dir);
+}
+
 #[cfg(feature = "local")]
 fn run(settings: &Settings, wav: &[u8], model: &Path) -> Result<String> {
-    use std::sync::{Arc, Mutex, OnceLock};
-    use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+    use whisper_rs::{FullParams, SamplingStrategy};
 
-    // Loading a model takes seconds, so keep the last one around.
-    static CACHE: OnceLock<Mutex<Option<(PathBuf, Arc<WhisperContext>)>>> = OnceLock::new();
-    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
-    let ctx = match &*cache {
-        Some((p, c)) if p == model => c.clone(),
-        _ => {
-            let c = Arc::new(
-                WhisperContext::new_with_params(
-                    model.to_str().ok_or_else(|| anyhow!("non-UTF-8 model path"))?,
-                    WhisperContextParameters::default(),
-                )
-                .map_err(|e| anyhow!("could not load model: {e}"))?,
-            );
-            *cache = Some((model.to_path_buf(), c.clone()));
-            c
-        }
-    };
+    let ctx = context(model, settings.use_gpu)?;
 
     let samples = wav_to_f32(wav)?;
     let mut state = ctx.create_state().map_err(|e| anyhow!("{e}"))?;
-    let mut params = FullParams::new(SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 });
+    // Beam search is only affordable on a GPU; on the CPU greedy decoding is
+    // several times faster for short dictation.
+    let strategy = if GPU_BUILD {
+        SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 }
+    } else {
+        SamplingStrategy::Greedy { best_of: 1 }
+    };
+    let mut params = FullParams::new(strategy);
+    params.set_n_threads(std::thread::available_parallelism().map_or(4, |n| n.get().min(8)) as i32);
     let lang = settings.language.trim();
     params.set_language(if lang.is_empty() { None } else { Some(lang) });
     params.set_print_progress(false);

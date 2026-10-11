@@ -6,3 +6,11 @@ members = ["crates/core", "src-tauri"]
 version = "0.2.0"
 edition = "2021"
 license = "MIT"
+
+# whisper.cpp is built by cmake, which follows the crate's opt-level. Left at
+# the debug default it is many times slower and floods the terminal with
+# debug logging, so keep it optimized in dev builds.
+[profile.dev.package.whisper-rs-sys]
+opt-level = 3
+[profile.dev.package.whisper-rs]
+opt-level = 3

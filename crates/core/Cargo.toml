@@ -18,3 +18,15 @@ whisper-rs = { version = "0.16", optional = true }
 [features]
 # Local transcription via whisper.cpp. Needs cmake and a C++ compiler to build.
 local = ["dep:whisper-rs"]
+# GPU backends for local transcription. macOS on Apple Silicon always uses
+# Metal (see the target section below); pick one of these for Windows/Linux:
+#   vulkan  AMD, NVIDIA and Intel; needs the Vulkan SDK at build time
+#   cuda    NVIDIA only; needs the CUDA toolkit
+#   hip     AMD only; needs ROCm and AMDGPU_TARGETS (e.g. gfx1030, see `rocminfo`)
+vulkan = ["local", "whisper-rs/vulkan"]
+cuda = ["local", "whisper-rs/cuda"]
+hip = ["local", "whisper-rs/hipblas"]
+
+# Apple Silicon: Metal is part of the default build, no feature needed.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+whisper-rs = { version = "0.16", features = ["metal"], optional = true }

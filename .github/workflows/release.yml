@@ -22,11 +22,13 @@ jobs:
           - os: macos-15-intel
             args: --target x86_64-apple-darwin
             target: x86_64-apple-darwin
+          # macOS: Metal is enabled automatically on Apple Silicon.
+          # Linux and Windows: Vulkan runs on AMD, NVIDIA and Intel GPUs.
           - os: ubuntu-22.04
-            args: ""
+            args: --features vulkan
             target: ""
           - os: windows-latest
-            args: ""
+            args: --features vulkan
             target: ""
     runs-on: ${{ matrix.os }}
     permissions:
@@ -43,6 +45,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
             libasound2-dev libxdo-dev libclang-dev cmake
+
+      # Headers and the shader compiler whisper.cpp needs for its Vulkan
+      # backend. Sets VULKAN_SDK for the build.
+      - name: Vulkan SDK
+        if: runner.os != 'macOS'
+        uses: humbletim/setup-vulkan-sdk@v1.2.1
+        with:
+          vulkan-query-version: latest
+          vulkan-components: Vulkan-Headers, Vulkan-Loader, SPIRV-Tools, glslc
+          vulkan-use-cache: true
 
       - uses: dtolnay/rust-toolchain@stable
         with:
