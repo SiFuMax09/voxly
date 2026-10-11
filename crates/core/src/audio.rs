@@ -76,24 +76,99 @@ impl Recorder {
     }
 }
 
-/// Names of the available microphones.
-pub fn input_devices() -> Vec<String> {
+/// A selectable microphone: `id` is stored in the settings, `label` is shown.
+#[derive(serde::Serialize, Clone)]
+pub struct InputDevice {
+    pub id: String,
+    pub label: String,
+}
+
+/// The available microphones. On Linux these come from PipeWire/PulseAudio,
+/// like in other apps, instead of the raw ALSA devices (hw:, plughw:, ...).
+pub fn input_devices() -> Vec<InputDevice> {
+    #[cfg(target_os = "linux")]
+    {
+        let sources = pulse_sources();
+        if !sources.is_empty() {
+            return sources;
+        }
+    }
     cpal::default_host()
         .input_devices()
-        .map(|d| d.filter_map(|d| d.name().ok()).collect())
+        .map(|d| {
+            d.filter_map(|d| d.name().ok())
+                .filter(|n| usable_name(n))
+                .map(|n| InputDevice { id: n.clone(), label: n })
+                .collect()
+        })
         .unwrap_or_default()
+}
+
+/// Without PipeWire/PulseAudio, ALSA lists dozens of raw PCM names per card
+/// (hw:, plughw:, surround51, iec958, dmix, ...). Keep the useful ones;
+/// Windows and macOS device names pass through unchanged.
+fn usable_name(name: &str) -> bool {
+    if !cfg!(target_os = "linux") {
+        return true;
+    }
+    matches!(name, "default" | "pipewire" | "pulse") || name.starts_with("sysdefault:")
+}
+
+/// Real inputs known to PipeWire/PulseAudio, without the "Monitor of ..."
+/// entries that capture playback.
+#[cfg(target_os = "linux")]
+fn pulse_sources() -> Vec<InputDevice> {
+    let Ok(out) = std::process::Command::new("pactl")
+        .args(["list", "sources"])
+        .env("LC_ALL", "C")
+        .output()
+    else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (mut list, mut name) = (Vec::new(), None::<String>);
+    for line in text.lines().map(str::trim) {
+        if let Some(n) = line.strip_prefix("Name: ") {
+            name = Some(n.to_owned());
+        } else if let (Some(d), Some(n)) = (line.strip_prefix("Description: "), name.take()) {
+            if !n.ends_with(".monitor") {
+                list.push(InputDevice { id: n, label: d.to_owned() });
+            }
+        }
+    }
+    list
 }
 
 fn open_stream(samples: Arc<Mutex<Vec<f32>>>, name: &str) -> Result<(cpal::Stream, u32)> {
     let host = cpal::default_host();
-    let device = if name.is_empty() {
+    let find = |wanted: &str| {
+        host.input_devices()
+            .ok()
+            .and_then(|mut d| d.find(|d| d.name().is_ok_and(|n| n == wanted)))
+    };
+    // PipeWire/PulseAudio inputs are picked through the ALSA "pulse" device,
+    // which records from $PULSE_SOURCE.
+    #[cfg(target_os = "linux")]
+    let pulse = if name.is_empty() {
+        std::env::remove_var("PULSE_SOURCE");
+        None
+    } else if pulse_sources().iter().any(|s| s.id == name) {
+        std::env::set_var("PULSE_SOURCE", name);
+        Some(find("pulse").or_else(|| find("pipewire")).ok_or_else(|| {
+            anyhow!("this system cannot select PipeWire/PulseAudio microphones (ALSA pulse plugin missing); choose System default")
+        })?)
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "linux"))]
+    let pulse: Option<cpal::Device> = None;
+    let device = if let Some(d) = pulse {
+        Some(d)
+    } else if name.is_empty() {
         host.default_input_device()
     } else {
         // A saved microphone may be unplugged; fall back to the default.
-        host.input_devices()
-            .ok()
-            .and_then(|mut d| d.find(|d| d.name().is_ok_and(|n| n == name)))
-            .or_else(|| host.default_input_device())
+        find(name).or_else(|| host.default_input_device())
     }
     .ok_or_else(|| anyhow!("no microphone found"))?;
     let config = device.default_input_config()?;

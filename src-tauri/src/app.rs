@@ -568,7 +568,7 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
 }
 
 #[tauri::command]
-fn list_input_devices() -> Vec<String> {
+fn list_input_devices() -> Vec<voxly_core::audio::InputDevice> {
     voxly_core::audio::input_devices()
 }
 

@@ -184,12 +184,12 @@ $('add-term').onclick = () => termRow();
 
 // ---- microphone ---------------------------------------------------------
 async function loadMics() {
-  let names = [];
-  try { names = await invoke('list_input_devices'); } catch {}
+  let devices = [];
+  try { devices = await invoke('list_input_devices'); } catch {}
   const saved = settings?.input_device || '';
   // Keep a saved microphone selectable even while it is unplugged.
-  if (saved && !names.includes(saved)) names.push(saved);
-  $('mic').replaceChildren(new Option('System default', ''), ...names.map((n) => new Option(n, n)));
+  if (saved && !devices.some((d) => d.id === saved)) devices.push({ id: saved, label: `${saved} (not connected)` });
+  $('mic').replaceChildren(new Option('System default', ''), ...devices.map((d) => new Option(d.label, d.id)));
   $('mic').value = saved;
 }
 
