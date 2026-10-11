@@ -45,6 +45,8 @@ pub struct Settings {
     pub use_gpu: bool,
     /// Cut silence from the start and end of a recording before transcribing.
     pub trim_silence: bool,
+    /// Understand spoken commands such as "new line", "comma" or "delete that".
+    pub voice_commands: bool,
     /// Transcribe every recording with both the local model and the OpenAI
     /// API, and show time and text side by side. Needs both to be set up.
     pub compare_mode: bool,
@@ -76,6 +78,7 @@ impl Default for Settings {
             vocabulary: Vec::new(),
             use_gpu: true,
             trim_silence: true,
+            voice_commands: true,
             compare_mode: false,
             input_device: String::new(),
             flash_attn: true,

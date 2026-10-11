@@ -21,6 +21,8 @@ struct AppState {
     models_dir: PathBuf,
     recorder: Recorder,
     last: Mutex<String>,
+    /// Characters inserted by the last paste, for the "delete that" command.
+    inserted: Mutex<usize>,
     busy: Mutex<bool>,
 }
 
@@ -132,6 +134,17 @@ fn stop_recording(app: &AppHandle) {
                     "timing",
                     serde_json::json!({ "ms": elapsed.as_millis() as u64, "audio_s": seconds, "backend": backend }),
                 );
+                let text = if settings.voice_commands {
+                    let outcome = voxly_core::commands::apply(&text);
+                    if outcome.delete_last {
+                        let _ = app.emit("transcript", "(deleted the last dictation)");
+                        set_status(&app, Status::Idle);
+                        return delete_inserted(&app);
+                    }
+                    outcome.text
+                } else {
+                    text
+                };
                 *state.last.lock().unwrap() = text.clone();
                 let _ = app.emit("transcript", &text);
                 set_status(&app, Status::Idle);
@@ -255,6 +268,7 @@ fn output(app: &AppHandle, text: &str, paste: bool) {
     }
     #[cfg(desktop)]
     if paste {
+        *app.state::<AppState>().inserted.lock().unwrap() = text.chars().count();
         let handle = app.clone();
         // Enigo must run on the main thread on macOS.
         let _ = app.run_on_main_thread(move || {
@@ -265,6 +279,32 @@ fn output(app: &AppHandle, text: &str, paste: bool) {
     }
     #[cfg(not(desktop))]
     let _ = paste;
+}
+
+/// "Delete that": removes the text inserted last by sending Backspace.
+fn delete_inserted(app: &AppHandle) {
+    let count = std::mem::take(&mut *app.state::<AppState>().inserted.lock().unwrap());
+    if count == 0 {
+        return;
+    }
+    #[cfg(desktop)]
+    {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+            let result = Enigo::new(&Settings::default())
+                .map_err(|e| e.to_string())
+                .and_then(|mut e| {
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                    (0..count.min(5000))
+                        .try_for_each(|_| e.key(Key::Backspace, Direction::Click))
+                        .map_err(|e| e.to_string())
+                });
+            if let Err(e) = result {
+                report(&handle, format!("could not delete the text: {e}"));
+            }
+        });
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -847,6 +887,7 @@ pub fn run() {
                 models_dir: app.path().app_data_dir()?.join("models"),
                 recorder: Recorder::default(),
                 last: Mutex::new(String::new()),
+                inserted: Mutex::new(0),
                 busy: Mutex::new(false),
             });
             preload_model(app.handle());

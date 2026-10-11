@@ -2,6 +2,7 @@
 //! microphone capture and the OpenAI transcription client.
 
 pub mod audio;
+pub mod commands;
 pub mod history;
 pub mod local;
 pub mod settings;

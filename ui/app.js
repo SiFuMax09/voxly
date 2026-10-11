@@ -383,6 +383,7 @@ function render() {
   $('auto-paste').checked = settings.auto_paste;
   $('compare-mode').checked = !!settings.compare_mode;
   $('trim-silence').checked = settings.trim_silence !== false;
+  $('voice-commands').checked = settings.voice_commands !== false;
   $('mic').value = settings.input_device || '';
   $('use-gpu').checked = settings.use_gpu !== false;
   $('overlay-position').value = settings.overlay_position || 'top';
@@ -409,6 +410,7 @@ function collect() {
     auto_paste: $('auto-paste').checked,
     compare_mode: $('compare-mode').checked,
     trim_silence: $('trim-silence').checked,
+    voice_commands: $('voice-commands').checked,
     input_device: $('mic').value,
     use_gpu: $('use-gpu').checked,
     overlay_position: $('overlay-position').value,
