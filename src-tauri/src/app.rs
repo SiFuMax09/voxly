@@ -97,10 +97,22 @@ fn stop_recording(app: &AppHandle) {
         };
         let settings = state.settings.lock().unwrap().clone();
         let seconds = usage::wav_seconds(&wav);
+        let started = std::time::Instant::now();
         let result = transcribe(&settings, wav, &state.models_dir).await;
+        let elapsed = started.elapsed();
         *state.busy.lock().unwrap() = false;
         match result {
             Ok(text) => {
+                let backend = if settings.backend == "local" {
+                    if settings.use_gpu && local::GPU_BUILD { "local, GPU" } else { "local, CPU" }
+                } else {
+                    "cloud"
+                };
+                eprintln!("transcribed {seconds}s of audio in {:.2}s ({backend})", elapsed.as_secs_f32());
+                let _ = app.emit(
+                    "timing",
+                    serde_json::json!({ "ms": elapsed.as_millis() as u64, "audio_s": seconds, "backend": backend }),
+                );
                 *state.last.lock().unwrap() = text.clone();
                 let _ = app.emit("transcript", &text);
                 set_status(&app, Status::Idle);

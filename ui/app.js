@@ -162,6 +162,11 @@ function setStatus(s) {
 $('rec').onclick = () => invoke('toggle');
 $('paste-last').onclick = () => invoke('paste_last_cmd');
 listen('status', (e) => setStatus(e.payload));
+listen('timing', (e) => {
+  const { ms, audio_s, backend } = e.payload;
+  $('timing').textContent = `Transcribed ${audio_s} s of audio in ${(ms / 1000).toFixed(2)} s (${backend})`;
+  $('timing').hidden = false;
+});
 listen('transcript', (e) => { $('last').value = e.payload; });
 listen('error', (e) => { $('error').textContent = e.payload; $('error').hidden = false; });
 
