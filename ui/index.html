@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Voxly</title>
+  <link rel="icon" type="image/svg+xml" href="logo.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header><img src="logo.svg" alt="" width="36" height="36"><h1>Voxly</h1></header>
+    <section class="hero">
+      <button id="rec" aria-label="Record"><span id="rec-label">Record</span></button>
+      <p id="status">Idle</p>
+      <p id="error" hidden></p>
+    </section>
+
+    <section>
+      <h2>Last transcript</h2>
+      <textarea id="last" readonly placeholder="Your dictation shows up here"></textarea>
+      <button id="paste-last" class="secondary">Paste last recording</button>
+    </section>
+
+    <section>
+      <h2>Transcription</h2>
+      <label>Backend
+        <select id="backend">
+          <option value="openai">OpenAI (cloud, own API key)</option>
+          <option value="local" id="opt-local">Local (on this device, no key)</option>
+        </select>
+      </label>
+      <div id="openai-box">
+        <label>API key <input id="api-key" type="password" autocomplete="off" placeholder="sk-..."></label>
+        <label>Model
+          <select id="model">
+            <option value="whisper-1">whisper-1</option>
+            <option value="gpt-4o-transcribe">gpt-4o-transcribe</option>
+            <option value="gpt-4o-mini-transcribe">gpt-4o-mini-transcribe</option>
+          </select>
+        </label>
+      </div>
+      <div id="local-box" hidden>
+        <label>Local model <select id="local-model"></select></label>
+        <button id="download" class="secondary" type="button" hidden>Download model</button>
+        <p id="dl-status" class="hint" hidden></p>
+      </div>
+      <label>Language (ISO code, empty = auto) <input id="language" placeholder="en"></label>
+    </section>
+
+    <section>
+      <h2>Vocabulary</h2>
+      <p class="hint">Terms are sent to Whisper as a spelling hint. "Sounds like" phrases are rewritten to the term afterwards.</p>
+      <div id="terms"></div>
+      <button id="add-term" class="secondary">Add term</button>
+    </section>
+
+    <section class="desktop-only">
+      <h2>Hotkeys</h2>
+      <p class="hint">Click a field and press the combination.</p>
+      <label>Hold to record <div class="hotkey" id="hk-hold" tabindex="0" role="button"></div></label>
+      <label>Record (toggle) <div class="hotkey" id="hk-toggle" tabindex="0" role="button"></div></label>
+      <label>Paste last recording <div class="hotkey" id="hk-paste" tabindex="0" role="button"></div></label>
+      <label class="check"><input type="checkbox" id="auto-paste"> Paste into the focused app automatically</label>
+    </section>
+
+    <p id="saved" hidden>Saved ✓</p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

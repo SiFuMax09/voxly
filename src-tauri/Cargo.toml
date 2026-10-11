@@ -1,0 +1,30 @@
+[package]
+name = "voxly"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "voxly_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+voxly-core = { path = "../crates/core" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-clipboard-manager = "2"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-global-shortcut = "2"
+enigo = "0.5"
+
+# Local transcription is desktop-only for now (whisper.cpp cross-compiles to
+# mobile, but that is not set up yet).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies.voxly-core]
+path = "../crates/core"
+features = ["local"]

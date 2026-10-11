@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 160 160" role="img" aria-label="Logo">
+<rect x="0" y="0" width="160" height="160" rx="40" fill="#12141A"/>
+<rect x="26" y="64" width="10" height="32" rx="5" fill="#3B5BFF"/>
+<rect x="42" y="44" width="10" height="72" rx="5" fill="#3B5BFF"/>
+<rect x="58" y="56" width="10" height="48" rx="5" fill="#3B5BFF"/>
+<rect x="84" y="50" width="50" height="10" rx="5" fill="#FFFFFF"/>
+<rect x="84" y="75" width="36" height="10" rx="5" fill="#FFFFFF"/>
+<rect x="84" y="100" width="44" height="10" rx="5" fill="#FFFFFF"/>
+</svg>

@@ -1,0 +1,20 @@
+[package]
+name = "voxly-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1"
+cpal = "0.15"
+hound = "3"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["multipart", "json", "rustls-tls"] }
+tokio = { version = "1", features = ["rt"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+whisper-rs = { version = "0.16", optional = true }
+
+[features]
+# Local transcription via whisper.cpp. Needs cmake and a C++ compiler to build.
+local = ["dep:whisper-rs"]
