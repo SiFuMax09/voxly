@@ -59,7 +59,8 @@ fn start_recording(app: &AppHandle) {
     if *state.busy.lock().unwrap() {
         return;
     }
-    match state.recorder.start() {
+    let device = state.settings.lock().unwrap().input_device.clone();
+    match state.recorder.start(&device) {
         Ok(()) => set_status(app, Status::Recording),
         Err(e) => report(app, e),
     }
@@ -555,6 +556,11 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
 }
 
 #[tauri::command]
+fn list_input_devices() -> Vec<String> {
+    voxly_core::audio::input_devices()
+}
+
+#[tauri::command]
 fn list_models(state: State<AppState>) -> Vec<local::ModelStatus> {
     local::list_models(&state.models_dir)
 }
@@ -597,7 +603,8 @@ async fn tune_speed_inner(
     sample: std::time::Duration,
 ) -> Result<local::TuneReport, String> {
     let state = app.state::<AppState>();
-    state.recorder.start().map_err(|e| format!("{e:#}"))?;
+    let device = state.settings.lock().unwrap().input_device.clone();
+    state.recorder.start(&device).map_err(|e| format!("{e:#}"))?;
     set_status(app, Status::Recording);
     let _ = app.emit("tune", "Speak now for 5 seconds…");
     let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(sample)).await;
@@ -742,6 +749,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
+            list_input_devices,
             save_settings,
             list_models,
             download_model,

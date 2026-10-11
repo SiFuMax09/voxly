@@ -43,6 +43,8 @@ pub struct Settings {
     /// Run local transcription on the GPU when the build supports it
     /// (Metal, Vulkan, CUDA or HIP). Falls back to the CPU otherwise.
     pub use_gpu: bool,
+    /// Name of the microphone to record from; empty means the system default.
+    pub input_device: String,
     /// Flash attention on the GPU. Set by the speed test.
     pub flash_attn: bool,
     /// Decoding width: 1 is greedy, higher is beam search. 0 picks a default
@@ -68,6 +70,7 @@ impl Default for Settings {
             language: String::new(),
             vocabulary: Vec::new(),
             use_gpu: true,
+            input_device: String::new(),
             flash_attn: true,
             beam_size: 0,
             threads: 0,

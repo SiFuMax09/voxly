@@ -177,6 +177,17 @@ function termRow(t = { term: '', sounds_like: [] }) {
 }
 $('add-term').onclick = () => termRow();
 
+// ---- microphone ---------------------------------------------------------
+async function loadMics() {
+  let names = [];
+  try { names = await invoke('list_input_devices'); } catch {}
+  const saved = settings?.input_device || '';
+  // Keep a saved microphone selectable even while it is unplugged.
+  if (saved && !names.includes(saved)) names.push(saved);
+  $('mic').replaceChildren(new Option('System default', ''), ...names.map((n) => new Option(n, n)));
+  $('mic').value = saved;
+}
+
 // ---- speed test ---------------------------------------------------------
 $('tune').onclick = async () => {
   const log = $('tune-log');
@@ -314,6 +325,7 @@ function render() {
   setHotkey($('hk-toggle'), settings.hotkeys.toggle);
   setHotkey($('hk-paste'), settings.hotkeys.paste_last);
   $('auto-paste').checked = settings.auto_paste;
+  $('mic').value = settings.input_device || '';
   $('use-gpu').checked = settings.use_gpu !== false;
   $('overlay-position').value = settings.overlay_position || 'top';
   $('terms').replaceChildren();
@@ -337,6 +349,7 @@ function collect() {
     vocabulary,
     hotkeys: { hold: $('hk-hold').dataset.value, toggle: $('hk-toggle').dataset.value, paste_last: $('hk-paste').dataset.value },
     auto_paste: $('auto-paste').checked,
+    input_device: $('mic').value,
     use_gpu: $('use-gpu').checked,
     overlay_position: $('overlay-position').value,
   };
@@ -368,6 +381,7 @@ document.querySelector('main').addEventListener('change', scheduleSave);
 
 (async () => {
   settings = await invoke('get_settings');
+  await loadMics();
   render();
   await refreshModels();
   $('last').value = await invoke('get_last');

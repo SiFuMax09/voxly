@@ -27,7 +27,8 @@ impl Recorder {
         self.active.lock().unwrap().is_some()
     }
 
-    pub fn start(&self) -> Result<()> {
+    /// `device` is a name from [`input_devices`]; empty uses the default.
+    pub fn start(&self, device: &str) -> Result<()> {
         let mut slot = self.active.lock().unwrap();
         if slot.is_some() {
             return Ok(());
@@ -35,9 +36,10 @@ impl Recorder {
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
 
+        let device = device.to_owned();
         let handle = std::thread::spawn(move || {
             let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
-            match open_stream(samples.clone()) {
+            match open_stream(samples.clone(), &device) {
                 Ok((stream, rate)) => {
                     let _ = ready_tx.send(Ok(()));
                     let _ = stop_rx.recv();
@@ -74,10 +76,26 @@ impl Recorder {
     }
 }
 
-fn open_stream(samples: Arc<Mutex<Vec<f32>>>) -> Result<(cpal::Stream, u32)> {
-    let device = cpal::default_host()
-        .default_input_device()
-        .ok_or_else(|| anyhow!("no microphone found"))?;
+/// Names of the available microphones.
+pub fn input_devices() -> Vec<String> {
+    cpal::default_host()
+        .input_devices()
+        .map(|d| d.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default()
+}
+
+fn open_stream(samples: Arc<Mutex<Vec<f32>>>, name: &str) -> Result<(cpal::Stream, u32)> {
+    let host = cpal::default_host();
+    let device = if name.is_empty() {
+        host.default_input_device()
+    } else {
+        // A saved microphone may be unplugged; fall back to the default.
+        host.input_devices()
+            .ok()
+            .and_then(|mut d| d.find(|d| d.name().is_ok_and(|n| n == name)))
+            .or_else(|| host.default_input_device())
+    }
+    .ok_or_else(|| anyhow!("no microphone found"))?;
     let config = device.default_input_config()?;
     let rate = config.sample_rate().0;
     let channels = config.channels() as usize;
