@@ -86,7 +86,16 @@ fn key_from_code(code: &str) -> Option<KeyCode> {
         }
     }
     if let Some(n) = code.strip_prefix('F').and_then(|n| n.parse::<usize>().ok()) {
-        return FKEYS.get(n.checked_sub(1)?).copied();
+        const HIGH: [KeyCode; 12] = [
+            KeyCode::KEY_F13, KeyCode::KEY_F14, KeyCode::KEY_F15, KeyCode::KEY_F16,
+            KeyCode::KEY_F17, KeyCode::KEY_F18, KeyCode::KEY_F19, KeyCode::KEY_F20,
+            KeyCode::KEY_F21, KeyCode::KEY_F22, KeyCode::KEY_F23, KeyCode::KEY_F24,
+        ];
+        return match n {
+            1..=12 => FKEYS.get(n - 1).copied(),
+            13..=24 => HIGH.get(n - 13).copied(),
+            _ => None,
+        };
     }
     Some(match code {
         "Space" => KeyCode::KEY_SPACE,

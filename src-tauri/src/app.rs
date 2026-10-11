@@ -75,6 +75,7 @@ fn start_recording(app: &AppHandle) {
             // Streaming only helps the local model, and compare mode needs the
             // whole audio for both sides.
             if settings.streaming && settings.backend == "local" && !settings.compare_mode {
+                *state.inserted.lock().unwrap() = 0;
                 let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let handle = tauri::async_runtime::spawn(stream_worker(app.clone(), stop.clone()));
                 *state.stream.lock().unwrap() = Some(StreamJob { stop, handle });
@@ -84,9 +85,59 @@ fn start_recording(app: &AppHandle) {
     }
 }
 
-/// Every quarter second, looks for a pause in what has been recorded so far
-/// and transcribes the speech before it, so that only the last words are left
-/// when the key is released. Returns the texts of the chunks in order.
+/// What a transcribed chunk turns into when it is added to the dictation.
+enum Piece {
+    Text(String),
+    /// The user said "delete that".
+    Delete,
+    Empty,
+}
+
+/// Applies the voice commands to one chunk and adds the separating space.
+fn make_piece(settings: &Settings, raw: &str, first: bool) -> Piece {
+    let mut text = raw.trim().to_owned();
+    if settings.voice_commands {
+        let outcome = voxly_core::commands::apply(&text);
+        if outcome.delete_last {
+            return Piece::Delete;
+        }
+        text = outcome.text;
+    }
+    if text.is_empty() {
+        return Piece::Empty;
+    }
+    // Chunks are joined with a space, except after a line break or before
+    // spoken punctuation, which already attached itself.
+    let glue = !first && !text.starts_with(['\n', ',', '.', '!', '?', ':', ';']);
+    Piece::Text(if glue { format!(" {text}") } else { text })
+}
+
+/// Types one finished chunk into the focused app right away.
+fn insert_live(app: &AppHandle, piece: &str, paste: bool) {
+    if !paste {
+        return;
+    }
+    if let Err(e) = app.clipboard().write_text(piece) {
+        #[cfg(target_os = "linux")]
+        let fallback = is_wayland() && wayland_copy(piece).is_ok();
+        #[cfg(not(target_os = "linux"))]
+        let fallback = false;
+        if !fallback {
+            return report(app, format!("clipboard: {e}"));
+        }
+    }
+    *app.state::<AppState>().inserted.lock().unwrap() += piece.chars().count();
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Err(e) = simulate_paste() {
+            report(&handle, format!("paste failed: {e}"));
+        }
+    });
+}
+
+/// Every quarter second, looks for a pause (or, in fluent speech, a quiet
+/// moment) in what has been recorded so far, transcribes the speech before it
+/// and types it into the focused app immediately. Returns the inserted pieces.
 async fn stream_worker(
     app: AppHandle,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -94,7 +145,8 @@ async fn stream_worker(
     use std::sync::atomic::Ordering;
     use voxly_core::audio::{find_pause_cut, samples_to_wav, trim_silence};
 
-    let mut texts: Vec<String> = Vec::new();
+    let mut pieces: Vec<String> = Vec::new();
+    let mut context = String::new();
     let mut cut = 0usize;
     while !stop.load(Ordering::SeqCst) {
         let _ = tauri::async_runtime::spawn_blocking(|| {
@@ -118,15 +170,26 @@ async fn stream_worker(
             Err(_) => wav,
         };
         let settings = state.settings.lock().unwrap().clone();
-        let context = texts.last().cloned().unwrap_or_default();
-        let text = voxly_core::transcribe::transcribe_chunk(&settings, wav, &state.models_dir, &context)
+        let raw = voxly_core::transcribe::transcribe_chunk(&settings, wav, &state.models_dir, &context)
             .await
             .map_err(|e| format!("{e:#}"))?;
-        if !text.trim().is_empty() {
-            texts.push(text);
+        match make_piece(&settings, &raw, pieces.is_empty()) {
+            Piece::Text(piece) => {
+                context = raw;
+                insert_live(&app, &piece, settings.auto_paste);
+                pieces.push(piece);
+                let _ = app.emit("transcript", pieces.concat());
+            }
+            Piece::Delete => {
+                pieces.clear();
+                context.clear();
+                delete_inserted(&app);
+                let _ = app.emit("transcript", "");
+            }
+            Piece::Empty => {}
         }
     }
-    Ok(texts)
+    Ok(pieces)
 }
 
 /// How long to keep recording after the key is released, so the last word of
@@ -190,20 +253,28 @@ fn stop_recording(app: &AppHandle) {
                 Ok(None) => None,
                 Err(_) => Some(wav),
             };
-            let mut parts = chunks;
+            let mut pieces = chunks;
             let mut failure = None;
             if let Some(w) = tail {
-                let context = parts.last().cloned().unwrap_or_default();
+                let context = pieces.last().cloned().unwrap_or_default();
                 match voxly_core::transcribe::transcribe_chunk(&settings, w, &state.models_dir, &context).await {
-                    Ok(t) if !t.trim().is_empty() => parts.push(t),
-                    Ok(_) => {}
+                    Ok(raw) => match make_piece(&settings, &raw, pieces.is_empty()) {
+                        Piece::Text(piece) => {
+                            insert_live(&app, &piece, settings.auto_paste);
+                            pieces.push(piece);
+                        }
+                        Piece::Delete => {
+                            pieces.clear();
+                            delete_inserted(&app);
+                        }
+                        Piece::Empty => {}
+                    },
                     Err(e) => failure = Some(e),
                 }
             }
             match failure {
                 Some(e) => Err(e),
-                None if parts.is_empty() => Err(anyhow::anyhow!("No speech detected.")),
-                None => Ok(parts.join(" ")),
+                None => Ok(pieces.concat()),
             }
         } else {
             let trimmed = if settings.trim_silence {
@@ -239,7 +310,9 @@ fn stop_recording(app: &AppHandle) {
                     "timing",
                     serde_json::json!({ "ms": elapsed.as_millis() as u64, "audio_s": seconds, "backend": backend }),
                 );
-                let text = if settings.voice_commands {
+                // Streamed text already went through the voice commands and
+                // into the focused app, one chunk at a time.
+                let text = if settings.voice_commands && !streamed {
                     let outcome = voxly_core::commands::apply(&text);
                     if outcome.delete_last {
                         let _ = app.emit("transcript", "(deleted the last dictation)");
@@ -255,7 +328,8 @@ fn stop_recording(app: &AppHandle) {
                 set_status(&app, Status::Idle);
                 if !text.is_empty() {
                     record_usage(&app, &text, seconds);
-                    output(&app, &text, settings.auto_paste);
+                    // Streamed: only keep the whole text on the clipboard.
+                    output(&app, &text, settings.auto_paste && !streamed);
                 }
             }
             Err(e) => report(&app, format!("{e:#}")),

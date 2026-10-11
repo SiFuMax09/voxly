@@ -303,23 +303,24 @@ pub fn samples_to_wav(samples: &[f32], rate: u32) -> Result<Vec<u8>> {
 }
 
 /// Looks for a good place to hand the audio recorded so far to the
-/// transcriber while the user is still speaking: a pause of 0.6 s or more
-/// after at least a short stretch of speech. Returns the sample index to cut
-/// at, relative to the start of `region`. Also cuts at the quietest moment of
-/// the last seconds if the region approaches Whisper's 30 s window.
+/// transcriber while the user is still speaking: a short pause after a bit of
+/// speech, or, if there is no pause for a few seconds, the quietest moment
+/// of the last seconds. Returns the sample index to cut at, relative to the
+/// start of `region`.
 pub fn find_pause_cut(region: &[f32], rate: u32) -> Option<usize> {
     const RUN: usize = 3;
-    const PAUSE: usize = 30; // frames of 20 ms = 600 ms
-    const MIN_SPEECH: usize = 10; // 200 ms
-    const KEEP: usize = 8; // keep 160 ms of the pause in the chunk
-    const MAX_FRAMES: usize = 24 * 50; // 24 s
+    const PAUSE: usize = 12; // frames of 20 ms = 240 ms
+    const MIN_SPEECH: usize = 40; // 800 ms
+    const KEEP: usize = 6; // keep 120 ms of the pause in the chunk
+    const FORCE_AFTER: usize = 6 * 50; // 6 s without a pause
+    const FORCE_WINDOW: usize = 2 * 50; // look for a dip in the last 2 s
 
     let frame = (rate as usize / 50).max(1);
     let loud: Vec<f32> = region
         .chunks_exact(frame)
         .map(|f| (f.iter().map(|s| s * s).sum::<f32>() / f.len() as f32).sqrt())
         .collect();
-    if loud.len() < 75 {
+    if loud.len() < 50 {
         return None;
     }
     let mut sorted = loud.clone();
@@ -338,10 +339,11 @@ pub fn find_pause_cut(region: &[f32], rate: u32) -> Option<usize> {
             return Some(((end + KEEP) * frame).min(region.len()));
         }
     }
-    if loud.len() >= MAX_FRAMES {
-        // Too long without a pause: cut where it is quietest in the last 6 s.
-        let from = loud.len() - 6 * 50;
-        let quietest = (from..loud.len()).min_by(|&a, &b| loud[a].total_cmp(&loud[b]))?;
+    if loud.len() >= FORCE_AFTER && speech_frames >= MIN_SPEECH {
+        // Fluent speech without a pause: cut at the quietest point of the
+        // last two seconds, which is usually between two words.
+        let from = loud.len() - FORCE_WINDOW;
+        let quietest = (from..loud.len() - RUN).min_by(|&a, &b| loud[a].total_cmp(&loud[b]))?;
         return Some(quietest * frame);
     }
     None
@@ -426,6 +428,7 @@ mod tests {
     #[test]
     fn no_cut_while_still_speaking_or_when_short() {
         assert!(find_pause_cut(&tone(0.3, 4.0, 48_000), 48_000).is_none());
+        assert!(find_pause_cut(&tone(0.3, 5.5, 48_000), 48_000).is_none());
         let mut short = tone(0.3, 0.5, 48_000);
         short.extend(tone(0.001, 0.5, 48_000));
         assert!(find_pause_cut(&short, 48_000).is_none());

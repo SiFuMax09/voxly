@@ -325,6 +325,9 @@ function combo(e) {
   }
   if (e.altKey) mods.push('Alt');
   if (e.shiftKey) mods.push('Shift');
+  // Function keys work on their own, which is handy for hold-to-talk: no
+  // modifier is held down while text is typed into the focused app.
+  if (!mods.length && /^F([1-9]|1\d|2[0-4])$/.test(e.code)) return e.code;
   return mods.length ? [...mods, e.code].join('+') : null;
 }
 document.querySelectorAll('.hotkey').forEach((el) => {
