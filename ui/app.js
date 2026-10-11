@@ -382,6 +382,7 @@ function render() {
   setHotkey($('hk-paste'), settings.hotkeys.paste_last);
   $('auto-paste').checked = settings.auto_paste;
   $('compare-mode').checked = !!settings.compare_mode;
+  $('trim-silence').checked = settings.trim_silence !== false;
   $('mic').value = settings.input_device || '';
   $('use-gpu').checked = settings.use_gpu !== false;
   $('overlay-position').value = settings.overlay_position || 'top';
@@ -407,6 +408,7 @@ function collect() {
     hotkeys: { hold: $('hk-hold').dataset.value, toggle: $('hk-toggle').dataset.value, paste_last: $('hk-paste').dataset.value },
     auto_paste: $('auto-paste').checked,
     compare_mode: $('compare-mode').checked,
+    trim_silence: $('trim-silence').checked,
     input_device: $('mic').value,
     use_gpu: $('use-gpu').checked,
     overlay_position: $('overlay-position').value,

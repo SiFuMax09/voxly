@@ -43,6 +43,8 @@ pub struct Settings {
     /// Run local transcription on the GPU when the build supports it
     /// (Metal, Vulkan, CUDA or HIP). Falls back to the CPU otherwise.
     pub use_gpu: bool,
+    /// Cut silence from the start and end of a recording before transcribing.
+    pub trim_silence: bool,
     /// Transcribe every recording with both the local model and the OpenAI
     /// API, and show time and text side by side. Needs both to be set up.
     pub compare_mode: bool,
@@ -73,6 +75,7 @@ impl Default for Settings {
             language: String::new(),
             vocabulary: Vec::new(),
             use_gpu: true,
+            trim_silence: true,
             compare_mode: false,
             input_device: String::new(),
             flash_attn: true,

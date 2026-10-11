@@ -97,6 +97,21 @@ fn stop_recording(app: &AppHandle) {
         };
         let settings = state.settings.lock().unwrap().clone();
         let seconds = usage::wav_seconds(&wav);
+        let wav = if settings.trim_silence {
+            match voxly_core::audio::trim_silence(&wav) {
+                Ok(Some(trimmed)) => trimmed,
+                Ok(None) => {
+                    *state.busy.lock().unwrap() = false;
+                    return report(&app, "No speech detected.");
+                }
+                Err(e) => {
+                    eprintln!("could not trim silence: {e:#}");
+                    wav
+                }
+            }
+        } else {
+            wav
+        };
         let started = std::time::Instant::now();
         let result = if settings.compare_mode {
             compare(&app, &settings, wav, seconds).await

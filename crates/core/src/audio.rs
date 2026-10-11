@@ -263,9 +263,87 @@ fn encode_wav(samples: &[f32], rate: u32) -> Result<Vec<u8>> {
     Ok(cursor.into_inner())
 }
 
+/// Cuts silence from the start and end of a recording (16 kHz mono WAV from
+/// [`Recorder::stop`]). Whisper then has less to process, and silence no
+/// longer produces invented sentences. Returns `None` if there is no speech.
+pub fn trim_silence(wav: &[u8]) -> Result<Option<Vec<u8>>> {
+    const FRAME: usize = (TARGET_RATE as usize) / 50; // 20 ms
+    const RUN: usize = 3; // a click is not speech; require 60 ms in a row
+    const PAD: usize = 12; // keep 240 ms around the speech
+
+    let mut reader = hound::WavReader::new(Cursor::new(wav))?;
+    let spec = reader.spec();
+    let samples: Vec<i16> = reader.samples::<i16>().collect::<Result<_, _>>()?;
+
+    let loud: Vec<f32> = samples
+        .chunks(FRAME)
+        .map(|f| (f.iter().map(|&s| (s as f32).powi(2)).sum::<f32>() / f.len() as f32).sqrt() / i16::MAX as f32)
+        .collect();
+    if loud.len() < RUN {
+        return Ok(Some(wav.to_vec()));
+    }
+    // The quietest fifth of the frames approximates the room noise. When the
+    // whole clip is speech that estimate is far too high, so it is capped at
+    // half of the loud end.
+    let mut sorted = loud.clone();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let noise = sorted[sorted.len() / 5];
+    let loudest = sorted[sorted.len() * 9 / 10];
+    let threshold = (noise * 4.0).min(loudest * 0.5).max(0.01);
+
+    let speech = |i: usize| loud[i..i + RUN].iter().all(|&l| l > threshold);
+    let Some(first) = (0..=loud.len() - RUN).find(|&i| speech(i)) else {
+        return Ok(None);
+    };
+    let last = (0..=loud.len() - RUN).rev().find(|&i| speech(i)).unwrap_or(first) + RUN;
+
+    let from = first.saturating_sub(PAD) * FRAME;
+    let to = ((last + PAD) * FRAME).min(samples.len());
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut writer = hound::WavWriter::new(&mut cursor, spec)?;
+        for &s in &samples[from..to] {
+            writer.write_sample(s)?;
+        }
+        writer.finalize()?;
+    }
+    Ok(Some(cursor.into_inner()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wav_of(parts: &[(f32, usize)]) -> Vec<u8> {
+        // (amplitude, seconds) segments of a 440 Hz tone
+        let mut samples = Vec::new();
+        for &(amp, secs) in parts {
+            for i in 0..(secs * TARGET_RATE as usize) {
+                samples.push(amp * (i as f32 * 440.0 * std::f32::consts::TAU / TARGET_RATE as f32).sin());
+            }
+        }
+        encode_wav(&samples, TARGET_RATE).unwrap()
+    }
+
+    #[test]
+    fn trims_leading_and_trailing_silence() {
+        let wav = wav_of(&[(0.001, 2), (0.3, 1), (0.001, 2)]);
+        let trimmed = trim_silence(&wav).unwrap().unwrap();
+        let secs = (trimmed.len() - 44) as f32 / 32_000.0;
+        assert!((1.0..2.0).contains(&secs), "got {secs}s");
+    }
+
+    #[test]
+    fn pure_silence_has_no_speech() {
+        assert!(trim_silence(&wav_of(&[(0.001, 3)])).unwrap().is_none());
+    }
+
+    #[test]
+    fn speech_only_is_kept_whole() {
+        let wav = wav_of(&[(0.3, 2)]);
+        let trimmed = trim_silence(&wav).unwrap().unwrap();
+        assert!(trimmed.len() >= wav.len() - 2 * 640);
+    }
 
     #[test]
     fn resample_halves_length_for_32k() {
