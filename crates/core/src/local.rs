@@ -223,7 +223,8 @@ fn engine(model: &Path, use_gpu: bool, flash_attn: bool) -> Result<std::sync::Ar
     use std::sync::{Arc, Mutex, OnceLock};
     use whisper_rs::{WhisperContext, WhisperContextParameters};
 
-    static CACHE: OnceLock<Mutex<Option<(PathBuf, (bool, bool), Arc<Engine>)>>> = OnceLock::new();
+    type Cached = Option<(PathBuf, (bool, bool), Arc<Engine>)>;
+    static CACHE: OnceLock<Mutex<Cached>> = OnceLock::new();
     let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
     if let Some((p, key, e)) = &*cache {
         if p == model && *key == (use_gpu, flash_attn) {
@@ -299,7 +300,7 @@ fn run(settings: &Settings, wav: &[u8], model: &Path, context: &str) -> Result<S
 
     let mut text = String::new();
     for seg in state.as_iter() {
-        text.push_str(&seg.to_str().map_err(|e| anyhow!("{e}"))?);
+        text.push_str(seg.to_str().map_err(|e| anyhow!("{e}"))?);
     }
     Ok(text.trim().to_owned())
 }

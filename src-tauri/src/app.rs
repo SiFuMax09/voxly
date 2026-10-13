@@ -1086,6 +1086,7 @@ async fn grant_hotkey_access(app: AppHandle) -> Result<(), String> {
         tauri::async_runtime::spawn_blocking(crate::evdev_hotkeys::grant_access)
             .await
             .map_err(|e| e.to_string())??;
+        #[allow(clippy::needless_return)]
         return register_hotkeys(&app);
     }
     #[cfg(not(target_os = "linux"))]
